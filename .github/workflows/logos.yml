@@ -1,0 +1,34 @@
+name: Update Logos
+
+on:
+  workflow_dispatch: 
+  schedule:
+    - cron: "0 1 1 * *"        # 06:00 UTC on the 1st of each month, as a safety net
+
+permissions:
+  contents: write              # allow the job to commit logos.json back
+
+jobs:
+  logos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild logos.json
+        run: python scripts/build_logos.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logos.json
+          if git diff --cached --quiet; then
+            echo "No logo changes."
+          else
+            git commit -m "Update logos.json"
+            git push
+          fi
