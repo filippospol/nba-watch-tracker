@@ -1,8 +1,8 @@
-name: Update Schedule
+name: Update schedule
 
 on:
   schedule:
-    - cron: "0 0 * * *"     
+    - cron: "0 2 * * *"      # 11:00 UTC (~6-7am ET) — after the previous night's games finish
   workflow_dispatch:           # also run on demand from the Actions tab
 
 permissions:
