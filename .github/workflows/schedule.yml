@@ -1,0 +1,34 @@
+name: Update Schedule
+
+on:
+  schedule:
+    - cron: "0 0 * * *"     
+  workflow_dispatch:           # also run on demand from the Actions tab
+
+permissions:
+  contents: write              # allow the job to commit schedule.json back
+
+jobs:
+  schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild schedule.json
+        run: python scripts/fetch_schedule.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add schedule.json
+          if git diff --cached --quiet; then
+            echo "No schedule changes."
+          else
+            git commit -m "Update schedule.json"
+            git push
+          fi
