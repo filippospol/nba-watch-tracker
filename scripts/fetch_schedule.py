@@ -88,11 +88,26 @@ def rows_from_board(board: dict, *, include_nonnba: bool = False) -> list[list[s
         when = _eastern(ev.get("date") or comps[0].get("date") or "")
         if not when:
             continue
-        rows.append([when, away_name, home_name])
+        row = [when, away_name, home_name]
+        score = _final_score(comps[0], ev, home, away)
+        if score is not None:
+            row += list(score)  # [away_score, home_score]
+        rows.append(row)
     return rows
 
 
-def _dump(rows: list[list[str]]) -> str:
+def _final_score(comp: dict, ev: dict, home: dict, away: dict):
+    """Return (away_score, home_score) as ints if the game is final, else None."""
+    status = (comp.get("status") or ev.get("status") or {}).get("type") or {}
+    if not status.get("completed"):
+        return None
+    try:
+        return int(away.get("score")), int(home.get("score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dump(rows: list) -> str:
     inner = ",\n".join("  " + json.dumps(r, ensure_ascii=False) for r in rows)
     return "[\n" + inner + "\n]\n"
 
