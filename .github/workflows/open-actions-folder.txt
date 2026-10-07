@@ -1,0 +1,2 @@
+This is a test file to enable GitHub Actions on this repository.
+[Filippos Polyzos]
