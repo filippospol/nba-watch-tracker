@@ -219,6 +219,7 @@
 </style>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <div class="wrap">
   <div class="mast">
     <div>
@@ -235,6 +236,7 @@
     </div>
   </div>
   <p class="status" id="status">Loading</p>
+  <div class="authbar" id="authbar"></div>
 
   <div class="tabs">
     <button data-view="list" class="on">Schedule</button>
@@ -1822,48 +1824,102 @@ function setStatus(){
   s.textContent=parts.join(" · ");
 }
 
-/* ---------- account storage (db capability) ---------- */
-let trackerRef=null, firstSnap=true, writeChain=Promise.resolve(), writeTimer=null, cloudBroken=false;
+/* ========== account storage (Supabase) ==========================
+   PASTE YOUR TWO PROJECT VALUES BELOW. Both are safe to commit publicly:
+   the publishable key only works together with the Row Level Security
+   rules on your `trackers` table. Find them in Supabase under
+   Settings -> API  (the Project URL, and the "Publishable" key that
+   starts with sb_publishable_).                                       */
+const SUPABASE_URL = "https://rvlwbahzleroeqmbraqo.supabase.co";
+const SUPABASE_KEY = "sb_publishable_gOY5_1mGOJUA6mXELSe0FA_B4kxRK6L";
+/* =============================================================== */
+
+const sbReady = !!(window.supabase
+  && /^https:\/\/.+\.supabase\.co/.test(SUPABASE_URL)
+  && SUPABASE_KEY.indexOf("sb_publishable_")===0
+  && SUPABASE_KEY.indexOf("PASTE")===-1);
+const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false;
 function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
+
 async function initStore(){
-  const use=window.claude&&window.claude.use;
-  if(!use) return;
-  let db=null, user=null;
-  try{ db=await window.claude.use("db"); }catch(e){}
-  if(!db) return;
-  try{
-    db.collection("scores").limit(1000).onSnapshot(snap=>applyScores(snap.docs),()=>{});
-  }catch(e){}
-  try{ user=await window.claude.use("user"); }catch(e){}
-  const uid=user?await user.id():null;
-  if(!uid) return;
-  trackerRef=db.doc("data/users/"+uid+"/tracker");
-  trackerRef.onSnapshot(snap=>{
-    if(snap.metadata&&snap.metadata.hasPendingWrites) return;
-    const body=snap.exists?(snap.data()||{}):{};
-    const cloud=new Set(Array.isArray(body.watched)?body.watched.map(String):[]);
-    state.sync="account";
-    if(firstSnap){
-      firstSnap=false;
-      const union=new Set([...cloud,...state.watched]);
-      state.watched=union;
-      if(!sameSet(union,cloud)) queueSave();
+  if(!sb){ renderAuth(); return; }            // not configured -> local-only, no login box
+  // Fires once on load (INITIAL_SESSION), on sign-in after the magic-link
+  // redirect lands back here, and on sign-out. Keep it non-awaiting inside.
+  sb.auth.onAuthStateChange((_evt, session)=>{
+    const u = session ? session.user : null;
+    const changed = (u && u.id) !== (currentUser && currentUser.id);
+    currentUser = u;
+    if(u){
+      state.sync="account";
+      if(changed){ firstPull=true; pullCloud(); }
     }else{
-      state.watched=cloud;
+      state.sync="local";
     }
-    store.set("nba_watched",[...state.watched]);
-    setStatus(); render();
-  },()=>{ state.sync="local"; setStatus(); });
+    renderAuth(); setStatus(); render();
+  });
+  renderAuth(); setStatus();
 }
+
+async function pullCloud(){
+  if(!sb || !currentUser) return;
+  const { data, error } = await sb.from("trackers")
+    .select("watched").eq("user_id", currentUser.id).maybeSingle();
+  if(error){ state.sync="local"; setStatus(); return; }
+  const cloud = new Set(Array.isArray(data && data.watched) ? data.watched.map(String) : []);
+  if(firstPull){
+    firstPull=false;
+    // First sign-in on this device: fold anything saved in this browser into the account.
+    const union = new Set([...cloud, ...state.watched]);
+    state.watched = union;
+    if(!sameSet(union, cloud)) queueSave();
+  }else{
+    state.watched = cloud;
+  }
+  store.set("nba_watched",[...state.watched]);
+  setStatus(); render();
+}
+
 function queueSave(){
-  if(!trackerRef||cloudBroken) return;
+  if(!sb || !currentUser) return;             // logged out -> stays in this browser only
   clearTimeout(writeTimer);
-  writeTimer=setTimeout(()=>{
-    const body={watched:[...state.watched], updatedAt:new Date().toISOString()};
-    writeChain=writeChain.then(()=>trackerRef.set(body)).catch(e=>{
-      if(e&&e.code==="invalid_argument"){ cloudBroken=true; state.sync="local"; setStatus(); }
-    });
+  writeTimer=setTimeout(async ()=>{
+    if(cloudBusy){ queueSave(); return; }       // a write is in flight; try again shortly
+    cloudBusy=true;
+    const row={ user_id: currentUser.id, watched:[...state.watched], updated_at:new Date().toISOString() };
+    try{ await sb.from("trackers").upsert(row); }
+    catch(e){ /* keep the local copy; next change retries */ }
+    cloudBusy=false;
   },500);
+}
+
+/* ---------- login UI (magic-link email) ---------- */
+function renderAuth(){
+  const el=document.getElementById("authbar");
+  if(!el) return;
+  if(!sb){ el.innerHTML=""; return; }         // not configured yet -> hide login, local-only
+  if(currentUser){
+    el.innerHTML = `<span>Signed in as <b>${currentUser.email||"your account"}</b></span>`
+      + `<button id="signout" class="link" type="button">Sign out</button>`;
+    el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); };
+  }else{
+    el.innerHTML = `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email">`
+      + `<button id="authsend" type="button">Email me a sign-in link</button>`
+      + `<span id="authmsg"></span>`;
+    const send=async ()=>{
+      const email=(el.querySelector("#authemail").value||"").trim();
+      const msg=el.querySelector("#authmsg");
+      if(!email){ msg.textContent="Enter your email first."; return; }
+      msg.textContent="Sending…";
+      const { error } = await sb.auth.signInWithOtp({
+        email, options:{ emailRedirectTo: location.href.split("#")[0] }
+      });
+      msg.textContent = error ? "Something went wrong — try again." : "Check your email for the sign-in link.";
+    };
+    el.querySelector("#authsend").onclick=send;
+    el.querySelector("#authemail").onkeydown=e=>{ if(e.key==="Enter") send(); };
+  }
 }
 
 /* ---------- region selector (custom dropdown, live GMT offsets) ---------- */
