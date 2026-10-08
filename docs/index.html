@@ -1821,10 +1821,10 @@ function normalise(raw){
   return out;
 }
 const baseScores=new Map();   // "away|home" -> [{ms, as, hs, final}] from embedded finals
-function loadSeed(){
+function rowsToSeed(rows){
   baseScores.clear();
-  const games=SEED.map(row=>{
-    const w=row[0], a=row[1], h=row[2], as=row[3], hs=row[4];
+  const games=rows.map(row=>{
+    const w=row[0], a=canon(row[1]), h=canon(row[2]), as=row[3], hs=row[4];
     const ms=etWallToUTCms(w);
     if(as!=null && hs!=null){
       const k=a+"|"+h;
@@ -1833,6 +1833,22 @@ function loadSeed(){
     return {ms, away:a, home:h};
   });
   return normalise(games);
+}
+function loadSeed(){ return rowsToSeed(SEED); }
+
+/* Pull the live schedule.json that the GitHub Action keeps fresh (new games + final
+   scores), and fall back silently to the embedded SEED snapshot if it can't be reached.
+   Fetched from raw GitHub so it works no matter which folder Pages serves from. */
+const SCHEDULE_URL = "https://raw.githubusercontent.com/filippospol/nba-watch-tracker/main/schedule.json";
+async function loadLiveSchedule(){
+  try{
+    const res = await fetch(SCHEDULE_URL, { cache:"no-cache" });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(!Array.isArray(rows) || !rows.length || !Array.isArray(rows[0])) return;
+    state.seed = rowsToSeed(rows);
+    rebuildGames(); updatePreseasonTab(); setStatus(); render();
+  }catch(e){ /* offline or blocked -> keep the embedded snapshot */ }
 }
 const NEAR=36*3600e3;
 function findIn(list,ms){ return (list||[]).find(x=>Math.abs(x.ms-ms)<NEAR); }
@@ -2484,6 +2500,7 @@ function init(){
   state.seed=loadSeed(); rebuildGames();
   setView("list"); setStatus();
   updatePreseasonTab();
+  loadLiveSchedule();            // replace the embedded snapshot with the live schedule.json
   loadLogos();
   initAuthUI();
   initStore();
