@@ -1,12 +1,12 @@
 name: Update Logos
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
   schedule:
-    - cron: "0 1 1 * *"        # 06:00 UTC on the 1st of each month, as a safety net
+    - cron: "0 1 1 * *"        # 01:00 UTC on the 1st of each month, as a safety net
 
 permissions:
-  contents: write              # allow the job to commit logos.json back
+  contents: write              # allow the job to commit logos.json and docs/logos back
 
 jobs:
   logos:
@@ -18,17 +18,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Rebuild logos.json
-        run: python scripts/build_logos.py
+      - name: Rebuild logos.json and save logo images into the site
+        run: python scripts/build_logos.py --download docs/logos
 
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add logos.json
+          git add logos.json docs/logos
           if git diff --cached --quiet; then
             echo "No logo changes."
           else
-            git commit -m "Update logos.json"
+            git commit -m "Update team logos"
+            git pull --rebase
             git push
           fi
