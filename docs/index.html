@@ -241,6 +241,17 @@
   .teamhdr .tclear{font-size:12px; padding:3px 10px; white-space:nowrap; align-self:center}
   .teamhdr .tnext{grid-column:1 / -1; font-size:12px; color:var(--muted); margin-top:2px}
   .lazysent{height:1px}
+  /* all-season bar (replaces the day strip in whole-season view) */
+  .allbar{display:flex; align-items:center; gap:14px; margin:10px 0 0; font-size:12px; color:var(--muted)}
+  .allbar .allcount{margin-left:auto}
+  .allbar .link{border:0; background:none; color:var(--accent); text-decoration:underline; text-underline-offset:2px; cursor:pointer; padding:0; font-weight:500}
+  .allbar .link:hover{color:var(--fg)}
+  /* floating back-to-top button (appears once you've scrolled) */
+  .totop{position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom,0px)); z-index:40;
+    background:var(--fg); color:var(--bg); border:0; padding:8px 13px; font-size:12px; font-weight:500; cursor:pointer;
+    box-shadow:0 4px 14px rgba(0,0,0,.22); opacity:0; transform:translateY(8px); pointer-events:none; transition:opacity .2s ease, transform .2s ease}
+  .totop.show{opacity:1; transform:none; pointer-events:auto}
+  @media (prefers-reduced-motion: reduce){ .totop{transition:none} }
   .brand .kicker::before{display:none}
   .topright{display:flex; align-items:flex-start; gap:12px}
   .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
@@ -327,6 +338,7 @@
     <div id="logincontent"></div>
   </div>
 </div>
+<button class="totop" id="totop" type="button" aria-label="Back to top">&uarr; Top</button>
 <script>
 "use strict";
 /* ---------- regions (country -> IANA timezone; GMT offset shown live) ---------- */
@@ -2240,7 +2252,7 @@ function dayBlocksArr(keys,groups,filter){
   for(const k of keys){
     const gs=(groups.get(k)||[]).filter(filter);
     if(!gs.length) continue; any=true;
-    const head=`<div class="dayhead"><span>${dayLabel(gs[0].ms,state.region)}</span><span class="cnt">${dayCount(gs.length)}</span></div>`;
+    const head=`<div class="dayhead" data-dk="${k}"><span>${dayLabel(gs[0].ms,state.region)}</span><span class="cnt">${dayCount(gs.length)}</span></div>`;
     let pre="", rows="";
     for(let i=0;i<gs.length;i++){
       const g=gs[i], done=phase(g,now)==="final";
@@ -2255,10 +2267,10 @@ function dayBlocksArr(keys,groups,filter){
 
 /* Lazy mount: render the first chunk of day-blocks, then append the rest as a sentinel
    scrolls into view — keeps a whole-season list smooth on phones. */
-let _lazyObs=null;
+let _lazyObs=null, _lazyMore=null, _lazyDone=true;
 function mountBlocks(listEl, blocks){
   if(_lazyObs){ _lazyObs.disconnect(); _lazyObs=null; }
-  const CHUNK=24; let i=0;
+  const CHUNK=24; let i=0; _lazyDone=false;
   const sentinel=document.createElement("div"); sentinel.className="lazysent"; sentinel.setAttribute("aria-hidden","true");
   listEl.appendChild(sentinel);
   function more(){
@@ -2267,13 +2279,23 @@ function mountBlocks(listEl, blocks){
     wireGames(tmp);                                   // wire only the newly built rows
     while(tmp.firstChild) listEl.insertBefore(tmp.firstChild, sentinel);
     i+=CHUNK;
-    if(i>=blocks.length){ if(_lazyObs){_lazyObs.disconnect();_lazyObs=null;} sentinel.remove(); }
+    if(i>=blocks.length){ _lazyDone=true; if(_lazyObs){_lazyObs.disconnect();_lazyObs=null;} sentinel.remove(); }
   }
+  _lazyMore=more;
   more();
   if(i<blocks.length){
     _lazyObs=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) more(); }, {rootMargin:"800px"});
     _lazyObs.observe(sentinel);
-  }
+  }else _lazyDone=true;
+}
+/* In the All-season list, force-load forward until today's day appears, then scroll to it. */
+function jumpToToday(){
+  const list=document.getElementById("gamelist"); if(!list) return;
+  const todayK=dateKey(Date.now(),state.region);
+  const target=()=>[...list.querySelectorAll(".dayhead[data-dk]")].find(h=>h.dataset.dk>=todayK);
+  let t=target(), guard=0;
+  while(!t && !_lazyDone && _lazyMore && guard++<400){ _lazyMore(); t=target(); }
+  if(t) t.scrollIntoView({block:"start", behavior:"smooth"});
 }
 
 /* ---------- team focus: a header + that team's whole-season schedule ---------- */
@@ -2343,21 +2365,33 @@ function renderList(){
     listKeys = allDayKeys;
   }else{
     const monthKeys=[...new Set(allDayKeys.map(k=>k.slice(0,7)))].sort();
-    if(!state.month || !monthKeys.includes(state.month)){
+    // "all" is a valid month value (whole-season view); otherwise pin to a real month
+    if(state.month!=="all" && (!state.month || !monthKeys.includes(state.month))){
       const nowM=dateKey(Date.now(),tz).slice(0,7);
       state.month=monthKeys.includes(nowM)?nowM:monthKeys[0]; state.day=null;
     }
-    const dayKeys=allDayKeys.filter(k=>k.startsWith(state.month));
-    if(state.day && !dayKeys.includes(state.day)) state.day=null;
-    const monthTotal=dayKeys.reduce((n,k)=>n+groups.get(k).length,0);
-    const todayK=dateKey(Date.now(),tz);
-    const months=monthKeys.map(mk=>`<button data-m="${mk}" class="${mk===state.month?"on":""}">${monthLabel(mk,true)}</button>`).join("");
-    const days=`<button data-d="" class="${state.day?"":"on"}"><span class="dw">all</span><span class="dn">${monthLabel(state.month,false)}</span><span class="dc">${monthTotal}</span></button>`
-      + dayKeys.map(k=>{ const gs=groups.get(k);
-          const cls=[k===state.day?"on":"", k===todayK?"today":"", k<todayK?"past":""].join(" ").trim();
-          return `<button data-d="${k}" class="${cls}"><span class="dw">${weekday(gs[0].ms,tz)}</span><span class="dn">${+k.slice(8)}</span><span class="dc">${gs.length}</span></button>`; }).join("");
-    top = `<div class="months">${months}</div><div class="days">${days}</div>` + filters;
-    listKeys = state.day?[state.day]:dayKeys;
+    const allPill=`<button data-m="all" class="${state.month==="all"?"on":""}">All season</button>`;
+    const months=allPill+monthKeys.map(mk=>`<button data-m="${mk}" class="${mk===state.month?"on":""}">${monthLabel(mk,true)}</button>`).join("");
+
+    if(state.month==="all"){
+      // whole season, lazy-loaded; day strip replaced by a Jump-to-today control
+      const allTotal=allDayKeys.reduce((n,k)=>n+groups.get(k).length,0);
+      top = `<div class="months">${months}</div>`
+          + `<div class="allbar"><button class="link" id="f-today" type="button">Jump to today &darr;</button><span class="allcount">${allTotal.toLocaleString()} games &middot; whole season</span></div>`
+          + filters;
+      listKeys = allDayKeys;
+    }else{
+      const dayKeys=allDayKeys.filter(k=>k.startsWith(state.month));
+      if(state.day && !dayKeys.includes(state.day)) state.day=null;
+      const monthTotal=dayKeys.reduce((n,k)=>n+groups.get(k).length,0);
+      const todayK=dateKey(Date.now(),tz);
+      const days=`<button data-d="" class="${state.day?"":"on"}"><span class="dw">all</span><span class="dn">${monthLabel(state.month,false)}</span><span class="dc">${monthTotal}</span></button>`
+        + dayKeys.map(k=>{ const gs=groups.get(k);
+            const cls=[k===state.day?"on":"", k===todayK?"today":"", k<todayK?"past":""].join(" ").trim();
+            return `<button data-d="${k}" class="${cls}"><span class="dw">${weekday(gs[0].ms,tz)}</span><span class="dn">${+k.slice(8)}</span><span class="dc">${gs.length}</span></button>`; }).join("");
+      top = `<div class="months">${months}</div><div class="days">${days}</div>` + filters;
+      listKeys = state.day?[state.day]:dayKeys;
+    }
   }
 
   const {blocks,any}=dayBlocksArr(listKeys,groups,passes);
@@ -2368,6 +2402,7 @@ function renderList(){
   v.querySelectorAll(".seg button").forEach(b=>b.onclick=()=>{ state.wfilter=b.dataset.w; render(); });
   v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; state.day=null; render(); };
   const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
+  const jt=v.querySelector("#f-today"); if(jt) jt.onclick=jumpToToday;
   v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); };
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
@@ -2586,8 +2621,19 @@ function initTheme(){
   if(window.matchMedia){ try{ matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{ if(!document.documentElement.getAttribute("data-theme")) updateThemeUI(); }); }catch(e){} }
 }
 
+/* ---------- floating back-to-top ---------- */
+function initToTop(){
+  const btn=document.getElementById("totop");
+  if(!btn) return;
+  btn.onclick=()=>window.scrollTo({top:0, behavior:"smooth"});
+  const onScroll=()=>btn.classList.toggle("show", window.scrollY>500);
+  window.addEventListener("scroll", onScroll, {passive:true});
+  onScroll();
+}
+
 function init(){
   initTheme();
+  initToTop();
   buildRegion();
   state.seed=loadSeed(); rebuildGames();
   setView("list"); setStatus();
