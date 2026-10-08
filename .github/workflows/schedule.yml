@@ -4,8 +4,8 @@ on:
   schedule:
     # Twice a day, after every NBA game has finished (late West Coast games end
     # around 05:00–06:15 UTC, later in winter or with overtime):
-    - cron: "0 2 * * *"        # 07:00 UTC — early morning in Europe, all of last night's finals in
-    - cron: "0 10 * * *"       # 13:00 UTC — safety net (GitHub sometimes delays scheduled runs)
+    - cron: "0 7 * * *"        # 07:00 UTC — early morning in Europe, all of last night's finals in
+    - cron: "0 13 * * *"       # 13:00 UTC — safety net (GitHub sometimes delays scheduled runs)
   workflow_dispatch:           # also run on demand from the Actions tab
 
 permissions:
