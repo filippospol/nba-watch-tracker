@@ -231,6 +231,16 @@
   /* transparent all-red mark: one image, visible on both themes (no swap needed) */
   .brand .logo{width:42px; height:42px; flex:none; object-fit:contain; display:block}
   .tagline{margin:3px 0 0; font-size:12px; color:var(--muted); line-height:1.3; max-width:46ch}
+  /* team focus header */
+  .teamhdr{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 14px; margin:16px 0 2px; padding:0 0 14px; border-bottom:1px solid var(--rule-strong)}
+  .teamhdr .tlogo{display:flex}
+  .teamhdr .tlogo .lg{width:40px; height:40px}
+  .teamhdr .tname{font-size:18px; font-weight:600; letter-spacing:-.01em}
+  .teamhdr .tstat{font-size:12.5px; color:var(--muted); margin-top:2px}
+  .teamhdr .tstat b{color:var(--fg); font-weight:600}
+  .teamhdr .tclear{font-size:12px; padding:3px 10px; white-space:nowrap; align-self:center}
+  .teamhdr .tnext{grid-column:1 / -1; font-size:12px; color:var(--muted); margin-top:2px}
+  .lazysent{height:1px}
   .brand .kicker::before{display:none}
   .topright{display:flex; align-items:flex-start; gap:12px}
   .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
@@ -2173,7 +2183,16 @@ function toggle(id){
   const after=badgeState();
   const fresh=BADGES.filter(b=>after[b.id].done&&!before[b.id].done);
   if(fresh.length) toast(`Badge unlocked: ${fresh[fresh.length-1].name}`);
-  render();
+  // In a list with no watched/unwatched filter, update the one row in place so the
+  // scroll position and lazily-loaded content are kept. Otherwise re-render.
+  if((state.view==="list"||state.view==="preseason") && state.wfilter==="all"){
+    const sel=(window.CSS&&CSS.escape)?CSS.escape(id):id;
+    const el=document.querySelector(`#view .game[data-id="${sel}"]`);
+    if(el){ el.classList.toggle("watched",adding); el.setAttribute("aria-checked",adding?"true":"false"); }
+    updateTeamHeaderCounts();
+  }else{
+    render();
+  }
 }
 
 /* ---------- rows ---------- */
@@ -2214,60 +2233,102 @@ function monthLabel(mk,long){
 }
 function dayCount(n){ return n+(n===1?" game":" games"); }
 
-/* Renders day blocks, dropping the "Upcoming" rule before the first unfinished game
-   when finished games sit above it in the same list. */
-function dayBlocks(keys,groups,filter){
-  const now=Date.now(); let html="", sawDone=false, placed=false, any=false;
+/* Build day-blocks as an array (one HTML string per day), dropping the "Upcoming" rule
+   before the first unfinished game when finished games sit above it in the list. */
+function dayBlocksArr(keys,groups,filter){
+  const now=Date.now(); const blocks=[]; let sawDone=false, placed=false, any=false;
   for(const k of keys){
     const gs=(groups.get(k)||[]).filter(filter);
     if(!gs.length) continue; any=true;
-    let rows="";
-    let headPending=`<div class="dayhead"><span>${dayLabel(gs[0].ms,state.region)}</span><span class="cnt">${dayCount(gs.length)}</span></div>`;
+    const head=`<div class="dayhead"><span>${dayLabel(gs[0].ms,state.region)}</span><span class="cnt">${dayCount(gs.length)}</span></div>`;
+    let pre="", rows="";
     for(let i=0;i<gs.length;i++){
       const g=gs[i], done=phase(g,now)==="final";
       if(done) sawDone=true;
-      else if(sawDone && !placed){
-        placed=true;
-        if(i===0){ html+=NOWLINE; }      // whole day is upcoming: rule goes above its header
-        else rows+=NOWLINE;
-      }
+      else if(sawDone && !placed){ placed=true; if(i===0) pre=NOWLINE; else rows+=NOWLINE; }
       rows+=gameRow(g,now);
     }
-    html+=headPending+rows;
+    blocks.push(pre+head+rows);
   }
-  return {html,any};
+  return {blocks,any};
+}
+
+/* Lazy mount: render the first chunk of day-blocks, then append the rest as a sentinel
+   scrolls into view — keeps a whole-season list smooth on phones. */
+let _lazyObs=null;
+function mountBlocks(listEl, blocks){
+  if(_lazyObs){ _lazyObs.disconnect(); _lazyObs=null; }
+  const CHUNK=24; let i=0;
+  const sentinel=document.createElement("div"); sentinel.className="lazysent"; sentinel.setAttribute("aria-hidden","true");
+  listEl.appendChild(sentinel);
+  function more(){
+    const tmp=document.createElement("div");
+    tmp.innerHTML=blocks.slice(i,i+CHUNK).join("");
+    wireGames(tmp);                                   // wire only the newly built rows
+    while(tmp.firstChild) listEl.insertBefore(tmp.firstChild, sentinel);
+    i+=CHUNK;
+    if(i>=blocks.length){ if(_lazyObs){_lazyObs.disconnect();_lazyObs=null;} sentinel.remove(); }
+  }
+  more();
+  if(i<blocks.length){
+    _lazyObs=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) more(); }, {rootMargin:"800px"});
+    _lazyObs.observe(sentinel);
+  }
+}
+
+/* ---------- team focus: a header + that team's whole-season schedule ---------- */
+function teamStats(T){
+  const now=Date.now();
+  let total=0,w=0,l=0,watched=0,next=null;
+  for(const g of viewGames()){
+    if(g.away!==T && g.home!==T) continue;
+    total++;
+    if(state.watched.has(g.id)) watched++;
+    if(phase(g,now)==="final"){
+      const s=scoreFor(g);
+      if(s){ const win=(g.away===T)?s.as>s.hs:s.hs>s.as; if(win) w++; else l++; }
+    }else if(!next && g.ms>now){ next=g; }
+  }
+  return {total,w,l,watched,next};
+}
+function teamHeaderHtml(T){
+  const st=teamStats(T);
+  const rec=(st.w||st.l)?`${st.w}&ndash;${st.l}`:"&mdash;";
+  const nxt=st.next
+    ? `<div class="tnext">Next &middot; ${dayLabel(st.next.ms,state.region)} &middot; ${short(st.next.away)} @ ${short(st.next.home)} &middot; ${timeLabel(st.next.ms,state.region)}</div>`
+    : `<div class="tnext">No upcoming games left this season</div>`;
+  return `<div class="teamhdr">
+    <span class="tlogo">${logo(T)}</span>
+    <div class="tmeta">
+      <div class="tname">${T}</div>
+      <div class="tstat">${EAST.has(T)?"Eastern":"Western"} &middot; <b>${rec}</b> record &middot; <b id="team-watched">${st.watched}</b> of ${st.total} watched</div>
+    </div>
+    <button class="tclear" id="f-clearteam" type="button">&times; All teams</button>
+    ${nxt}
+  </div>`;
+}
+function updateTeamHeaderCounts(){
+  if(!state.team) return;
+  const el=document.getElementById("team-watched");
+  if(el) el.textContent=teamStats(state.team).watched;
 }
 
 function renderList(){
   const tz=state.region;
   const groups=groupByDay(viewGames());
-  const monthKeys=[...new Set([...groups.keys()].map(k=>k.slice(0,7)))].sort();
-  if(!monthKeys.length){ document.getElementById("view").innerHTML=`<div class="empty">No schedule loaded.</div>`; return; }
-  if(!state.month || !monthKeys.includes(state.month)){
-    const nowM=dateKey(Date.now(),tz).slice(0,7);
-    state.month=monthKeys.includes(nowM)?nowM:monthKeys[0];
-    state.day=null;
-  }
-  const dayKeys=[...groups.keys()].filter(k=>k.startsWith(state.month)).sort();
-  if(state.day && !dayKeys.includes(state.day)) state.day=null;
-  const monthTotal=dayKeys.reduce((n,k)=>n+groups.get(k).length,0);
-  const todayK=dateKey(Date.now(),tz);
+  const allDayKeys=[...groups.keys()].sort();
+  const v=document.getElementById("view");
+  if(!allDayKeys.length){ v.innerHTML=`<div class="empty">No schedule loaded.</div>`; return; }
 
-  const months=monthKeys.map(mk=>`<button data-m="${mk}" class="${mk===state.month?"on":""}">${monthLabel(mk,true)}</button>`).join("");
-  const days=`<button data-d="" class="${state.day?"":"on"}"><span class="dw">all</span><span class="dn">${monthLabel(state.month,false)}</span><span class="dc">${monthTotal}</span></button>`
-    + dayKeys.map(k=>{ const gs=groups.get(k);
-        const cls=[k===state.day?"on":"", k===todayK?"today":"", k<todayK?"past":""].join(" ").trim();
-        return `<button data-d="${k}" class="${cls}"><span class="dw">${weekday(gs[0].ms,tz)}</span><span class="dn">${+k.slice(8)}</span><span class="dc">${gs.length}</span></button>`; }).join("");
+  const teamMode=!!state.team;
 
+  // filters row (always present, including the team dropdown)
   const opt=t=>`<option value="${t}"${t===state.team?" selected":""}>${short(t)}</option>`;
   const teamOpts=`<option value="">All teams</option>`
     +`<optgroup label="Eastern Conference">${TEAMS.filter(t=>EAST.has(t)).map(opt).join("")}</optgroup>`
     +`<optgroup label="Western Conference">${TEAMS.filter(t=>!EAST.has(t)).map(opt).join("")}</optgroup>`;
-  const seg=["all","watched","unwatched"].map(v=>`<button data-w="${v}" class="${state.wfilter===v?"on":""}">${v[0].toUpperCase()+v.slice(1)}</button>`).join("");
-
-  let html=`<div class="months">${months}</div>
-    <div class="days">${days}</div>
-    <div class="filters">
+  const seg=["all","watched","unwatched"].map(x=>`<button data-w="${x}" class="${state.wfilter===x?"on":""}">${x[0].toUpperCase()+x.slice(1)}</button>`).join("");
+  const filters=`<div class="filters">
       <span class="seg">${seg}</span>
       <select id="f-team" aria-label="Team">${teamOpts}</select>
       <button class="switch" id="f-spoil" type="button" role="switch" aria-checked="${state.hideScores}"><span class="trk"></span>Hide scores</button>
@@ -2275,17 +2336,42 @@ function renderList(){
       <input type="text" id="f-s" placeholder="Find a team" aria-label="Find a team" value="${state.search.replace(/"/g,"&quot;")}">
     </div>`;
 
-  const out=dayBlocks(state.day?[state.day]:dayKeys,groups,passes);
-  html+=out.any?out.html:`<div class="empty">Nothing matches.</div>`;
+  let top="", listKeys;
+  if(teamMode){
+    // Team picked: header on top, month/day strips hidden, whole season listed.
+    top = teamHeaderHtml(state.team) + filters;
+    listKeys = allDayKeys;
+  }else{
+    const monthKeys=[...new Set(allDayKeys.map(k=>k.slice(0,7)))].sort();
+    if(!state.month || !monthKeys.includes(state.month)){
+      const nowM=dateKey(Date.now(),tz).slice(0,7);
+      state.month=monthKeys.includes(nowM)?nowM:monthKeys[0]; state.day=null;
+    }
+    const dayKeys=allDayKeys.filter(k=>k.startsWith(state.month));
+    if(state.day && !dayKeys.includes(state.day)) state.day=null;
+    const monthTotal=dayKeys.reduce((n,k)=>n+groups.get(k).length,0);
+    const todayK=dateKey(Date.now(),tz);
+    const months=monthKeys.map(mk=>`<button data-m="${mk}" class="${mk===state.month?"on":""}">${monthLabel(mk,true)}</button>`).join("");
+    const days=`<button data-d="" class="${state.day?"":"on"}"><span class="dw">all</span><span class="dn">${monthLabel(state.month,false)}</span><span class="dc">${monthTotal}</span></button>`
+      + dayKeys.map(k=>{ const gs=groups.get(k);
+          const cls=[k===state.day?"on":"", k===todayK?"today":"", k<todayK?"past":""].join(" ").trim();
+          return `<button data-d="${k}" class="${cls}"><span class="dw">${weekday(gs[0].ms,tz)}</span><span class="dn">${+k.slice(8)}</span><span class="dc">${gs.length}</span></button>`; }).join("");
+    top = `<div class="months">${months}</div><div class="days">${days}</div>` + filters;
+    listKeys = state.day?[state.day]:dayKeys;
+  }
 
-  const v=document.getElementById("view"); v.innerHTML=html;
+  const {blocks,any}=dayBlocksArr(listKeys,groups,passes);
+  v.innerHTML = top + `<div class="gamelist" id="gamelist"></div>` + (any?``:`<div class="empty">Nothing matches.</div>`);
+
   v.querySelectorAll(".months button").forEach(b=>b.onclick=()=>{ state.month=b.dataset.m; state.day=null; render(); });
   v.querySelectorAll(".days button").forEach(b=>b.onclick=()=>{ state.day=b.dataset.d||null; render(); });
   v.querySelectorAll(".seg button").forEach(b=>b.onclick=()=>{ state.wfilter=b.dataset.w; render(); });
-  v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; render(); };
+  v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; state.day=null; render(); };
+  const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
   v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); };
-  const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=v.querySelector("#f-s"); n.focus(); n.setSelectionRange(n.value.length,n.value.length); };
-  wireGames(v);
+  const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
+
+  if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
 }
 
 function renderCalendar(){
@@ -2425,7 +2511,12 @@ function wireGames(root){
   root.querySelectorAll(".game[data-id]").forEach(el=>{
     el.onclick=e=>{
       const r=e.target.closest("[data-reveal]");
-      if(r){ e.stopPropagation(); state.revealed.add(r.dataset.reveal); render(); return; }
+      if(r){ e.stopPropagation();
+        const id=r.dataset.reveal; state.revealed.add(id);
+        const g=state.games.find(x=>x.id===id), cell=el.querySelector(".score");
+        if(g&&cell){ const tmp=document.createElement("div"); tmp.innerHTML=scoreCell(g,phase(g,Date.now())); const nn=tmp.firstElementChild; if(nn) cell.replaceWith(nn); }
+        return;
+      }
       toggle(el.dataset.id);
     };
     el.onkeydown=e=>{ if(e.key===" "||e.key==="Enter"){ e.preventDefault(); toggle(el.dataset.id); } };
@@ -2445,6 +2536,7 @@ function viewGames(){
   return regularGames();
 }
 function render(){
+  if(_lazyObs){ _lazyObs.disconnect(); _lazyObs=null; }   // drop any prior lazy observer
   if(state.view==="list"||state.view==="preseason") renderList();
   else if(state.view==="calendar") renderCalendar();
   else renderStats();
