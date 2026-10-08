@@ -230,6 +230,35 @@
   .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
   .themebtn:hover{color:var(--fg)}
   .themebtn svg{width:16px; height:16px}
+  /* account button (header) */
+  .acctbtn{font-size:12px; padding:3px 11px; border:1px solid var(--fg); color:var(--fg)}
+  .acctbtn:hover{background:var(--fg); color:var(--bg)}
+  .acctbtn.in{border-color:var(--rule); color:var(--muted); font-weight:500}
+  .acctbtn.in:hover{border-color:var(--fg); color:var(--fg); background:none}
+  /* dedicated login screen (on-demand overlay) */
+  .loginmask{position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:20px}
+  .logincard{position:relative; background:var(--bg); border:1px solid var(--rule-strong); width:min(380px,100%); padding:30px 26px 26px; text-align:center}
+  .loginx{position:absolute; top:8px; right:10px; border:0; font-size:20px; line-height:1; color:var(--muted); padding:4px 8px}
+  .loginx:hover{color:var(--fg)}
+  .loginlogo{border-radius:13px; border:1px solid var(--rule); margin:0 auto 14px; display:block; background:var(--bg)}
+  .logincard h2{margin:0 0 8px; font-size:18px; font-weight:600; letter-spacing:-.01em}
+  .logincard p{margin:0 0 18px; color:var(--muted); font-size:13px; line-height:1.5}
+  .logincard .acctemail{font-weight:600; color:var(--fg); word-break:break-all}
+  .logincard .field{display:flex; flex-direction:column; gap:9px}
+  .logincard input[type=email]{width:100%; text-align:center; padding:9px 10px; font-size:14px}
+  .logincard .cta{padding:10px; border:1px solid var(--fg); background:var(--fg); color:var(--bg); font-weight:500}
+  .logincard .cta:hover{opacity:.88}
+  .logincard .cta:disabled{opacity:.5; cursor:default}
+  .loginmsg{min-height:16px; font-size:12px; color:var(--muted); margin-top:8px}
+  .loginmsg.ok{color:var(--fg)}
+  .loginskip{margin-top:16px; font-size:12.5px; color:var(--muted); text-decoration:underline; text-underline-offset:2px; border:0; background:none; cursor:pointer; padding:4px}
+  .loginskip:hover{color:var(--fg)}
+  /* seamless light <-> dark: colours ease only during the toggle (class added briefly), so no load flash or hover lag */
+  @media (prefers-reduced-motion: no-preference){
+    .theme-anim, .theme-anim *, .theme-anim *::before, .theme-anim *::after{
+      transition: background-color .3s ease, color .3s ease, border-color .3s ease, fill .3s ease, box-shadow .3s ease !important;
+    }
+  }
   @media (max-width:480px){ .brand .logo{width:36px; height:36px} }
 </style>
 <div class="wrap">
@@ -252,11 +281,11 @@
           <div class="tzlist" id="tzlist"></div>
         </div>
       </div>
+      <button class="acctbtn" id="acctbtn" type="button" hidden>Sign in</button>
     </div>
   </div>
   </div>
   <p class="status" id="status">Loading</p>
-  <div class="authbar" id="authbar"></div>
 
   <div class="tabs">
     <button data-view="list" class="on">Schedule</button>
@@ -266,6 +295,14 @@
   </div>
 
   <div id="view"></div>
+</div>
+
+<div class="loginmask" id="loginmask" hidden>
+  <div class="logincard" role="dialog" aria-modal="true" aria-labelledby="logintitle">
+    <button class="loginx" id="loginx" type="button" aria-label="Close">&times;</button>
+    <img class="loginlogo" src="icon.png" alt="" width="54" height="54">
+    <div id="logincontent"></div>
+  </div>
 </div>
 <script>
 "use strict";
@@ -1700,7 +1737,7 @@ const state={
   games:[],                      // seed + extra, sorted: {id, ms, away, home}
   scores:new Map(),              // "away|home" -> [{ms, as, hs, final}]
   scoresAt:0,
-  watched:new Set(store.get("nba_watched",[])),
+  watched:new Set(),             // session-only until signed in; the account (cloud) is the store of record
   region:store.get("nba_region","Europe/Athens"),
   hideScores:store.get("nba_hide_scores",true),   // spoiler shield on by default
   revealed:new Set(),
@@ -1840,7 +1877,7 @@ function setStatus(){
   const last=n?new Intl.DateTimeFormat("en-GB",{timeZone:state.region,day:"numeric",month:"short"}).format(new Date(gg[n-1].ms)):"";
   const parts=[`${n.toLocaleString()} games through ${last}`];
   parts.push(state.scoresAt?`scores updated ${ago(state.scoresAt)}`:"scores appear after each game night");
-  parts.push(state.sync==="account"?"saved to your account":"saved in this browser");
+  parts.push(state.sync==="account"?"saved to your account":"sign in to save your tracker");
   s.textContent=parts.join(" · ");
 }
 
@@ -1864,10 +1901,10 @@ let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false;
 function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
 
 async function initStore(){
-  if(!sb){ renderAuth(); return; }            // not configured -> local-only, no login box
-  // Fires once on load (INITIAL_SESSION), on sign-in after the magic-link
-  // redirect lands back here, and on sign-out. Keep it non-awaiting inside.
-  sb.auth.onAuthStateChange((_evt, session)=>{
+  if(!sb){ updateAccountBtn(); return; }        // not configured -> local-only, hide the account button
+  // Fires on load (INITIAL_SESSION), on sign-in after the magic-link redirect
+  // lands back here (SIGNED_IN), and on sign-out. Keep it non-awaiting inside.
+  sb.auth.onAuthStateChange((evt, session)=>{
     const u = session ? session.user : null;
     const changed = (u && u.id) !== (currentUser && currentUser.id);
     currentUser = u;
@@ -1877,9 +1914,13 @@ async function initStore(){
     }else{
       state.sync="local";
     }
-    renderAuth(); setStatus(); render();
+    updateAccountBtn();
+    const mask=document.getElementById("loginmask");
+    if(mask && !mask.hidden) renderLogin();       // keep an open login screen in sync
+    if(evt==="SIGNED_IN"){ closeLogin(); toast("Signed in — your tracker is now saved"); }
+    setStatus(); render();
   });
-  renderAuth(); setStatus();
+  updateAccountBtn(); setStatus();
 }
 
 async function pullCloud(){
@@ -1897,7 +1938,6 @@ async function pullCloud(){
   }else{
     state.watched = cloud;
   }
-  store.set("nba_watched",[...state.watched]);
   setStatus(); render();
 }
 
@@ -1914,33 +1954,63 @@ function queueSave(){
   },500);
 }
 
-/* ---------- login UI (magic-link email) ---------- */
-function renderAuth(){
-  const el=document.getElementById("authbar");
+/* ---------- account button + dedicated login screen (magic-link email) ---------- */
+function updateAccountBtn(){
+  const b=document.getElementById("acctbtn");
+  if(!b) return;
+  if(!sb){ b.hidden=true; return; }            // not configured -> no account button
+  b.hidden=false;
+  if(currentUser){ b.textContent="Account"; b.classList.add("in"); }
+  else{ b.textContent="Sign in"; b.classList.remove("in"); }
+}
+function renderLogin(){
+  const el=document.getElementById("logincontent");
   if(!el) return;
-  if(!sb){ el.innerHTML=""; return; }         // not configured yet -> hide login, local-only
   if(currentUser){
-    el.innerHTML = `<span>Signed in as <b>${currentUser.email||"your account"}</b></span>`
-      + `<button id="signout" class="link" type="button">Sign out</button>`;
-    el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); };
+    el.innerHTML =
+      `<h2>You're signed in</h2>`
+      + `<p>Your watched games are saved to your account and sync across your devices.<br><span class="acctemail">${currentUser.email||""}</span></p>`
+      + `<div class="field"><button class="cta" id="signout" type="button">Sign out</button></div>`
+      + `<button class="loginskip" id="logindone" type="button">Done</button>`;
+    el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); closeLogin(); };
+    el.querySelector("#logindone").onclick=closeLogin;
   }else{
-    el.innerHTML = `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email">`
-      + `<button id="authsend" type="button">Email me a sign-in link</button>`
-      + `<span id="authmsg"></span>`;
+    el.innerHTML =
+      `<h2>Save your season</h2>`
+      + `<p>Sign in to save the games you've watched and keep them in sync across every device. No password — we'll email you a one-tap link.</p>`
+      + `<div class="field">`
+      +   `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
+      +   `<button class="cta" id="authsend" type="button">Email me a sign-in link</button>`
+      + `</div>`
+      + `<div class="loginmsg" id="authmsg"></div>`
+      + `<button class="loginskip" id="loginskip" type="button">Continue browsing without saving</button>`;
+    const emailEl=el.querySelector("#authemail"), msg=el.querySelector("#authmsg"), btn=el.querySelector("#authsend");
     const send=async ()=>{
-      const email=(el.querySelector("#authemail").value||"").trim();
-      const msg=el.querySelector("#authmsg");
-      if(!email){ msg.textContent="Enter your email first."; return; }
-      msg.textContent="Sending…";
-      const { error } = await sb.auth.signInWithOtp({
-        email, options:{ emailRedirectTo: location.href.split("#")[0] }
-      });
-      msg.textContent = error ? "Something went wrong — try again." : "Check your email for the sign-in link.";
+      const email=(emailEl.value||"").trim();
+      if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email first."; return; }
+      btn.disabled=true; msg.className="loginmsg"; msg.textContent="Sending…";
+      const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.href.split("#")[0] } });
+      btn.disabled=false;
+      if(error){ msg.className="loginmsg"; msg.textContent="Something went wrong — try again."; }
+      else{ msg.className="loginmsg ok"; msg.textContent="Check your email for the sign-in link."; }
     };
-    el.querySelector("#authsend").onclick=send;
-    el.querySelector("#authemail").onkeydown=e=>{ if(e.key==="Enter") send(); };
+    btn.onclick=send;
+    emailEl.onkeydown=e=>{ if(e.key==="Enter") send(); };
+    el.querySelector("#loginskip").onclick=closeLogin;
+    setTimeout(()=>emailEl.focus(),40);
   }
 }
+function openLogin(){ if(!sb) return; renderLogin(); const m=document.getElementById("loginmask"); if(m) m.hidden=false; }
+function closeLogin(){ const m=document.getElementById("loginmask"); if(m) m.hidden=true; }
+function initAuthUI(){
+  updateAccountBtn();
+  const b=document.getElementById("acctbtn"); if(b) b.onclick=openLogin;
+  const x=document.getElementById("loginx"); if(x) x.onclick=closeLogin;
+  const m=document.getElementById("loginmask"); if(m) m.onclick=e=>{ if(e.target===m) closeLogin(); };
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeLogin(); });
+}
+let nudged=false;
+function nudgeSignIn(){ if(nudged||!sb) return; nudged=true; toast("Sign in to save your tracker"); }
 
 /* ---------- region selector (custom dropdown, live GMT offsets) ---------- */
 const offCache={};
@@ -1995,9 +2065,10 @@ function groupByDay(games){
 }
 function toggle(id){
   const before=badgeState();
-  if(state.watched.has(id)) state.watched.delete(id); else state.watched.add(id);
-  store.set("nba_watched",[...state.watched]);
-  queueSave();
+  const adding=!state.watched.has(id);
+  if(adding) state.watched.add(id); else state.watched.delete(id);
+  queueSave();                                  // writes to the account only when signed in
+  if(adding && !currentUser) nudgeSignIn();     // logged out -> this mark won't be saved
   const after=badgeState();
   const fresh=BADGES.filter(b=>after[b.id].done&&!before[b.id].done);
   if(fresh.length) toast(`Badge unlocked: ${fresh[fresh.length-1].name}`);
@@ -2296,10 +2367,18 @@ function updateThemeUI(){
   const t=effectiveTheme();
   const src = t==="dark" ? "icon.png" : "icon-light.png";
   const logo=document.querySelector(".brand .logo"); if(logo && logo.getAttribute("src")!==src) logo.setAttribute("src",src);
-  const fav=document.getElementById("favicon"); if(fav) fav.setAttribute("href",src);
+  const llogo=document.querySelector(".loginlogo"); if(llogo && llogo.getAttribute("src")!==src) llogo.setAttribute("src",src);
+  /* the browser-tab favicon stays the dark-tile icon in both themes (set statically in <head>) */
   const btn=document.getElementById("themebtn"); if(btn) btn.innerHTML = (t==="dark" ? SUN_SVG : MOON_SVG);
 }
-function applyTheme(t){ document.documentElement.setAttribute("data-theme",t); store.set("nba_theme",t); updateThemeUI(); }
+function applyTheme(t){
+  const root=document.documentElement;
+  root.classList.add("theme-anim");                 // enable smooth colour transitions just for the switch
+  root.setAttribute("data-theme",t);
+  store.set("nba_theme",t); updateThemeUI();
+  clearTimeout(applyTheme._t);
+  applyTheme._t=setTimeout(()=>root.classList.remove("theme-anim"),340);
+}
 function initTheme(){
   const saved=store.get("nba_theme",null);
   if(saved==="light"||saved==="dark") document.documentElement.setAttribute("data-theme",saved);
@@ -2315,6 +2394,7 @@ function init(){
   state.seed=loadSeed(); rebuildGames();
   setView("list"); setStatus();
   loadLogos();
+  initAuthUI();
   initStore();
   setInterval(()=>{ setStatus(); const a=document.activeElement; if(state.view!=="stats" && !(a&&a.tagName==="INPUT")) render(); },60000);  // keep Live/Final and the Upcoming rule current
 }
