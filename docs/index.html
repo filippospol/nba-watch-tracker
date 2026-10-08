@@ -1972,7 +1972,7 @@ function setStatus(){
   const last=n?new Intl.DateTimeFormat("en-GB",{timeZone:state.region,day:"numeric",month:"short"}).format(new Date(gg[n-1].ms)):"";
   const parts=[`${n.toLocaleString()} games through ${last}`];
   parts.push(state.scoresAt?`scores updated ${ago(state.scoresAt)}`:"scores appear after each game night");
-  parts.push(state.sync==="account"?"saved to your account":"sign in to save your tracker");
+  parts.push(syncLabel());
   s.textContent=parts.join(" · ");
 }
 
@@ -1992,7 +1992,7 @@ const sbReady = !!(window.supabase
   && SUPABASE_KEY.indexOf("PASTE")===-1);
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false, loginMode="signin";
+let currentUser=null, writeTimer=null, loginMode="signin";
 let cloudReady=false;        // no writes until the account's saved state has been read (avoids overwriting it)
 let prefsSupported=true;     // false if the `prefs` column hasn't been added yet -> sync watched games only
 let condensedSupported=true; // false if the `condensed` column hasn't been added yet
@@ -2018,17 +2018,26 @@ function applyPrefs(p){
 
 async function initStore(){
   if(!sb){ updateAccountBtn(); return; }        // not configured -> local-only, hide the account button
-  // Fires on load (INITIAL_SESSION), on sign-in after the magic-link redirect
-  // lands back here (SIGNED_IN), and on sign-out. Keep it non-awaiting inside.
+  // Fires on load (INITIAL_SESSION), on sign-in (SIGNED_IN), on password-reset return
+  // (PASSWORD_RECOVERY) and on sign-out. Keep it non-awaiting inside.
   sb.auth.onAuthStateChange((evt, session)=>{
     const u = session ? session.user : null;
-    const changed = (u && u.id) !== (currentUser && currentUser.id);
+    const prev = currentUser;
+    const changed = (u && u.id) !== (prev && prev.id);
+    // Signed out, or a different account signed in: forget the previous account's data
+    // in memory so it can never be shown to, or merged into, someone else's account.
+    if(changed && prev) resetAccountState();
     currentUser = u;
     if(u){
       state.sync="account";
-      if(changed){ firstPull=true; cloudReady=false; pullCloud(); }
+      if(changed){
+        cloudReady=false;
+        restorePending();          // unsaved changes this device kept for this account
+        showCached();              // last-known list right away (also works offline), then refresh it
+        pullCloud();
+      }
     }else{
-      state.sync="local"; cloudReady=false;
+      state.sync="local";
     }
     if(evt==="PASSWORD_RECOVERY"){ loginMode="recovery"; openLogin(); }
     updateAccountBtn();
@@ -2040,66 +2049,228 @@ async function initStore(){
   updateAccountBtn(); setStatus();
 }
 
-/* If an optional column (prefs / condensed) is missing, stop using just that one and retry. */
-function dropOptionalColumn(err){
-  const m=((err&&err.message)||"").toLowerCase();
-  if(condensedSupported && m.includes("condensed")){ condensedSupported=false; return true; }
-  if(prefsSupported && m.includes("prefs")){ prefsSupported=false; return true; }
-  if(condensedSupported){ condensedSupported=false; return true; }   // unknown error: shed optional columns one at a time
-  if(prefsSupported){ prefsSupported=false; return true; }
-  return false;
+/* ==================== account sync: identical lists on every device ====================
+   How it stays consistent:
+   • Each device keeps only ITS OWN unsaved changes ("pending": game -> full / condensed / removed).
+   • To save, it re-reads the account, applies just those changes on top, and writes back only if
+     nobody else saved in between (compare-and-swap on updated_at); otherwise it re-reads and retries.
+     So a device that has been open for days can never wipe out what another device saved.
+   • What you see = the account + this device's pending changes. It refreshes when the app comes
+     back into view, when the connection returns, and every 90 s while open.
+   • Pending changes are kept on this device until saved (survive refresh / closed tab / offline). */
+let pending=new Map();          // gameId -> "full" | "condensed" | null (removed), not yet in the account
+let pendingPrefs=false, prefsVer=0;
+let syncState="idle";           // "saving" | "saved" | "offline" | "error"
+let saving=false, saveAgain=false, retryTimer=null, retryDelay=2000, lastPull=0;
+let casSupported=true;          // false if the table has no updated_at column -> plain (but still merged) writes
+
+const pendKey=()=>currentUser?("nba_pending_"+currentUser.id):null;
+function persistPending(){
+  const k=pendKey(); if(!k) return;           // logged-out ticks are never stored
+  try{ if(pending.size||pendingPrefs) store.set(k,{ops:[...pending],prefs:pendingPrefs}); else localStorage.removeItem(k); }catch(e){}
 }
-async function pullCloud(){
-  if(!sb || !currentUser) return;
-  let data=null, error=null;
-  for(let attempt=0; attempt<3; attempt++){
-    const cols=["watched"].concat(prefsSupported?["prefs"]:[], condensedSupported?["condensed"]:[]).join(", ");
-    ({ data, error } = await sb.from("trackers").select(cols).eq("user_id", currentUser.id).maybeSingle());
-    if(!error || !dropOptionalColumn(error)) break;
+function restorePending(){
+  const k=pendKey(); if(!k) return;
+  const v=store.get(k,null);
+  if(v && Array.isArray(v.ops)){
+    for(const op of v.ops){
+      if(!Array.isArray(op)) continue;
+      const id=String(op[0]), t=(op[1]==="full"||op[1]==="condensed")?op[1]:null;
+      if(!pending.has(id)) pending.set(id,t);
+    }
+    if(v.prefs) pendingPrefs=true;
   }
-  if(error){ state.sync="local"; setStatus(); return; }
-  const cloud = new Set(Array.isArray(data && data.watched) ? data.watched.map(String) : []);
-  const cloudCond = new Set(Array.isArray(data && data.condensed) ? data.condensed.map(String) : []);
-  const cloudPrefs = (data && data.prefs && typeof data.prefs==="object") ? data.prefs : null;
-  let needSave=false;
-  if(firstPull){
-    firstPull=false;
-    // First sign-in on this device: fold anything ticked in this session into the account.
-    const union = new Set([...cloud, ...state.watched]);
-    const cond = new Set([...cloudCond, ...state.condensed].filter(id=>union.has(id)));
-    if(!sameSet(union, cloud) || (condensedSupported && !sameSet(cond, cloudCond))) needSave=true;
-    state.watched = union; state.condensed = cond;
-    // Settings follow the account; if the account has none yet, save this device's.
-    if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
-    else if(prefsSupported) needSave=true;
-  }else{
-    state.watched = cloud;
-    state.condensed = new Set([...cloudCond].filter(id=>cloud.has(id)));
-    if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
-  }
-  cloudReady=true;
-  if(needSave) queueSave();
-  setStatus(); render();
+}
+/* Last copy of the account seen on this device: lets the list show instantly and offline.
+   It's only ever a starting point — the account itself is re-read and always wins. */
+const cacheKey=()=>currentUser?("nba_cache_"+currentUser.id):null;
+function saveCache(w,c){ const k=cacheKey(); if(k) try{ store.set(k,{w:[...w],c:[...c]}); }catch(e){} }
+function showCached(){
+  const k=cacheKey(); if(!k) return;
+  const v=store.get(k,null);
+  const w=cleanIds(v&&v.w), c=cleanIds(v&&v.c);
+  for(const id of [...c]) if(!w.has(id)) c.delete(id);
+  applyOps(w,c,pending);
+  state.watched=w; state.condensed=c;
+}
+function resetAccountState(){
+  clearTimeout(writeTimer); clearTimeout(retryTimer);
+  pending=new Map(); pendingPrefs=false; cloudReady=false; syncState="idle"; retryDelay=2000;
+  state.watched=new Set(); state.condensed=new Set();
+}
+function setSync(s){ if(syncState!==s){ syncState=s; setStatus(); } }
+function syncLabel(){
+  if(!currentUser) return "sign in to save your tracker";
+  if(syncState==="offline") return "offline — changes will sync when you're back";
+  if(syncState==="error") return "couldn't sync — retrying";
+  if(syncState==="saving" || !cloudReady) return "syncing…";
+  return "saved to your account";
 }
 
-function queueSave(){
-  if(!sb || !currentUser || !cloudReady) return;   // logged out, or account not loaded yet
-  clearTimeout(writeTimer);
-  writeTimer=setTimeout(async ()=>{
-    if(cloudBusy){ queueSave(); return; }       // a write is in flight; try again shortly
-    cloudBusy=true;
-    try{
-      for(let attempt=0; attempt<3; attempt++){
-        const row={ user_id: currentUser.id, watched:[...state.watched], updated_at:new Date().toISOString() };
-        if(prefsSupported) row.prefs=collectPrefs();
-        if(condensedSupported) row.condensed=[...state.condensed].filter(id=>state.watched.has(id));
-        const { error } = await sb.from("trackers").upsert(row);
-        if(!error || !dropOptionalColumn(error)) break;
-      }
-    }catch(e){ /* keep the local copy; next change retries */ }
-    cloudBusy=false;
-  },500);
+function cleanIds(a){ return new Set(Array.isArray(a)?a.filter(x=>typeof x==="string"||typeof x==="number").map(String):[]); }
+function applyOps(w,c,ops){
+  for(const [id,t] of ops){
+    if(t){ w.add(id); if(t==="condensed") c.add(id); else c.delete(id); }
+    else { w.delete(id); c.delete(id); }
+  }
 }
+function changedIds(oldW,oldC,newW,newC){
+  const out=new Set();
+  for(const id of oldW) if(!newW.has(id)) out.add(id);
+  for(const id of newW) if(!oldW.has(id)) out.add(id);
+  for(const id of oldC) if(!newC.has(id)) out.add(id);
+  for(const id of newC) if(!oldC.has(id)) out.add(id);
+  return [...out];
+}
+/* Show new data without a full re-render when possible (keeps scroll position and lazy-loaded rows). */
+function showSynced(w,c,fullRender){
+  const ids=changedIds(state.watched,state.condensed,w,c);
+  state.watched=w; state.condensed=c;
+  setStatus();
+  if(fullRender){ render(); return; }
+  if(!ids.length) return;
+  if((state.view==="list"||state.view==="preseason") && state.wfilter==="all"){
+    for(const id of ids){ const el=rowEl(id); if(el) paintRow(el,id); }
+    updateTeamHeaderCounts();
+  }else render();
+}
+
+/* Only a genuinely missing column (not a network blip) switches an optional column off. */
+function dropOptionalColumn(err){
+  const m=((err&&err.message)||"").toLowerCase(), code=String((err&&err.code)||"");
+  if(!(code==="42703" || code==="PGRST204" || m.includes("column"))) return false;
+  if(casSupported && m.includes("updated_at")){ casSupported=false; return true; }
+  if(condensedSupported && m.includes("condensed")){ condensedSupported=false; return true; }
+  if(prefsSupported && m.includes("prefs")){ prefsSupported=false; return true; }
+  return false;
+}
+async function readCloud(uid){
+  for(let attempt=0; attempt<4; attempt++){
+    const cols=["watched"].concat(casSupported?["updated_at"]:[], prefsSupported?["prefs"]:[], condensedSupported?["condensed"]:[]).join(", ");
+    const { data, error } = await sb.from("trackers").select(cols).eq("user_id", uid).maybeSingle();
+    if(!error) return data;                         // null = no row yet
+    if(!dropOptionalColumn(error)) throw error;
+  }
+  throw new Error("could not read account");
+}
+function cloudSets(data){
+  const w=cleanIds(data&&data.watched), c=cleanIds(data&&data.condensed);
+  for(const id of [...c]) if(!w.has(id)) c.delete(id);          // condensed is always a subset of watched
+  return [w,c];
+}
+function scheduleRetry(){
+  clearTimeout(retryTimer);
+  retryTimer=setTimeout(()=>{ if(!currentUser) return; if(cloudReady) saveNow(); else pullCloud(); }, retryDelay);
+  retryDelay=Math.min(retryDelay*2, 60000);
+}
+function failSync(){ setSync(navigator.onLine===false?"offline":"error"); scheduleRetry(); }
+
+/* Read the account and show it (plus this device's unsaved changes on top). */
+async function pullCloud(){
+  if(!sb || !currentUser) return;
+  const uid=currentUser.id; lastPull=Date.now();
+  let data;
+  try{ data=await readCloud(uid); }catch(e){ failSync(); return; }
+  if(!currentUser || currentUser.id!==uid) return;              // signed out / switched meanwhile
+  const [w,c]=cloudSets(data);
+  saveCache(w,c);
+  applyOps(w,c,pending);
+  const before=collectPrefs();
+  const cp=(data && data.prefs && typeof data.prefs==="object") ? data.prefs : null;
+  if(cp && Object.keys(cp).length){ if(!pendingPrefs) applyPrefs(cp); }   // the account's settings win
+  else if(prefsSupported && !cloudReady){ pendingPrefs=true; prefsVer++; } // account has none yet: save this device's
+  const after=collectPrefs();
+  const first=!cloudReady; cloudReady=true;
+  if(syncState==="offline"||syncState==="error"||syncState==="idle") setSync(pending.size||pendingPrefs?"saving":"saved");
+  showSynced(w,c, first || after.region!==before.region || after.hideScores!==before.hideScores);
+  if(pending.size||pendingPrefs) queueSave();
+}
+function pullSoon(){ if(currentUser && cloudReady && !saving && Date.now()-lastPull>3000) pullCloud(); }
+
+function queueSave(){
+  if(!sb || !currentUser || !cloudReady) return;             // logged out, or account not loaded yet
+  if(!pending.size && !pendingPrefs) return;
+  setSync("saving");
+  clearTimeout(writeTimer);
+  writeTimer=setTimeout(saveNow,400);
+}
+/* Merge this device's changes into the latest account data and write it back safely. */
+async function saveNow(){
+  clearTimeout(writeTimer);
+  if(!sb || !currentUser || !cloudReady) return;
+  if(saving){ saveAgain=true; return; }
+  if(!pending.size && !pendingPrefs){ setSync("saved"); return; }
+  saving=true; setSync("saving");
+  const uid=currentUser.id;
+  const ops=new Map(pending), prefsDirty=pendingPrefs, pv=prefsVer;   // what this attempt commits
+  let ok=false;
+  try{
+    for(let attempt=0; attempt<6 && !ok; attempt++){
+      const data=await readCloud(uid);                        // fresh copy every attempt
+      if(!currentUser || currentUser.id!==uid) return;
+      const [w,c]=cloudSets(data);
+      applyOps(w,c,ops);
+      const row={ watched:[...w], updated_at:new Date().toISOString() };
+      if(condensedSupported) row.condensed=[...c];
+      if(prefsSupported && prefsDirty) row.prefs=collectPrefs();
+      let res;
+      if(!data){
+        res=await sb.from("trackers").insert({ user_id:uid, ...row }).select("user_id");
+        if(res.error){ if(res.error.code==="23505" || dropOptionalColumn(res.error)) continue; throw res.error; }
+      }else if(casSupported){
+        let q=sb.from("trackers").update(row).eq("user_id",uid);
+        q = (data.updated_at==null) ? q.is("updated_at",null) : q.eq("updated_at",data.updated_at);
+        res=await q.select("user_id");
+        if(res.error){ if(dropOptionalColumn(res.error)) continue; throw res.error; }
+        if(!res.data || !res.data.length) continue;           // someone else saved in between -> re-read, merge again
+      }else{
+        res=await sb.from("trackers").upsert({ user_id:uid, ...row });
+        if(res.error){ if(dropOptionalColumn(res.error)) continue; throw res.error; }
+      }
+      ok=true;
+      saveCache(w,c);
+      // Committed: forget the changes we just saved (unless they were changed again meanwhile).
+      for(const [id,t] of ops) if(pending.has(id) && pending.get(id)===t) pending.delete(id);
+      if(prefsDirty && prefsVer===pv) pendingPrefs=false;
+      persistPending();
+      const vw=new Set(w), vc=new Set(c); applyOps(vw,vc,pending);   // other devices' changes now shown too
+      showSynced(vw,vc,false);
+      retryDelay=2000;
+    }
+    if(!ok) throw new Error("save conflict");
+    setSync(pending.size||pendingPrefs?"saving":"saved");
+  }catch(e){
+    failSync();
+  }finally{
+    saving=false;
+    if((saveAgain || pending.size || pendingPrefs) && syncState==="saving" && currentUser){ saveAgain=false; queueSave(); }
+    saveAgain=false;
+  }
+}
+/* Wait for outstanding changes to reach the account (used before signing out). */
+async function flushSave(){
+  for(let i=0; i<40 && (saving || pending.size || pendingPrefs); i++){
+    if(!saving) await saveNow(); else await new Promise(r=>setTimeout(r,150));
+    if(syncState==="error" || syncState==="offline") break;
+  }
+  return !(pending.size || pendingPrefs);
+}
+function prefsChanged(){                          // a setting changed on this device
+  if(!currentUser) return;                        // signed out: settings stay on this device only
+  pendingPrefs=true; prefsVer++; persistPending(); queueSave();
+}
+/* keep every open device current */
+document.addEventListener("visibilitychange",()=>{
+  if(!currentUser || !sb) return;
+  if(document.visibilityState==="hidden"){ if(pending.size||pendingPrefs) saveNow(); }   // phone backgrounded: save now
+  else pullSoon();
+});
+window.addEventListener("focus", pullSoon);
+window.addEventListener("pageshow", e=>{ if(e.persisted) pullSoon(); });               // restored from back/forward cache
+window.addEventListener("online", ()=>{ retryDelay=2000; if(!currentUser) return; if(cloudReady && (pending.size||pendingPrefs)) saveNow(); else pullCloud(); });
+window.addEventListener("offline",()=>{ if(currentUser) setSync("offline"); });
+window.addEventListener("storage", e=>{ if(currentUser && e.key===pendKey()) pullSoon(); });   // another tab in this browser
+setInterval(()=>{ if(document.visibilityState==="visible") pullSoon(); }, 90000);
 
 /* ---------- account button + dedicated login screen (email + password) ---------- */
 function updateAccountBtn(){
@@ -2174,7 +2345,15 @@ function renderLogin(){
       updateAccountBtn(); renderLogin(); toast("Username saved");
     };
     sv.onclick=saveUser; inp.onkeydown=e=>{ if(e.key==="Enter") saveUser(); };
-    el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); closeLogin(); };
+    el.querySelector("#signout").onclick=async (ev)=>{
+      const b=ev.currentTarget; b.disabled=true; b.textContent="Saving…";
+      const ok=await flushSave();                 // make sure this device's changes reached the account
+      if(!ok && !confirm("Some changes haven't reached your account yet (you may be offline).\n\nSign out anyway? They'll stay on this device and sync the next time you sign in here.")){
+        b.disabled=false; b.textContent="Sign out"; return;
+      }
+      try{ localStorage.removeItem("nba_cache_"+currentUser.id); }catch(e){}   // nothing of this account left behind
+      await sb.auth.signOut(); closeLogin();
+    };
     el.querySelector("#logindone").onclick=closeLogin;
     return;
   }
@@ -2283,7 +2462,7 @@ function renderTzList(q){
   list.querySelectorAll(".tzrow[data-tz]").forEach(r=>r.onclick=()=>{
     state.region=r.dataset.tz; store.set("nba_region",state.region);
     state.cal=null; state.selDay=null;
-    closeTz(); renderTzButton(); render(); queueSave();
+    closeTz(); renderTzButton(); render(); prefsChanged();
   });
 }
 function openTz(){ document.getElementById("tzpop").hidden=false; const s=document.getElementById("tzsearch"); s.value=""; renderTzList(""); s.focus(); }
@@ -2320,6 +2499,8 @@ function setWatched(id,type){                     // type: "full" | "condensed" 
   const was=state.watched.has(id);
   if(type){ state.watched.add(id); if(type==="condensed") state.condensed.add(id); else state.condensed.delete(id); }
   else{ state.watched.delete(id); state.condensed.delete(id); }
+  pending.set(id, type||null);                    // remember this change until the account has it
+  persistPending();                               // (kept on this device only when signed in)
   queueSave();                                    // writes to the account only when signed in
   if(type && !was && !currentUser) nudgeSignIn(); // logged out -> this mark won't be saved
   const after=badgeState();
@@ -2562,7 +2743,7 @@ function renderList(){
   v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; state.day=null; render(); };
   const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
   const jt=v.querySelector("#f-today"); if(jt) jt.onclick=jumpToToday;
-  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); queueSave(); };
+  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); prefsChanged(); };
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
   if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
@@ -2920,7 +3101,7 @@ function applyTheme(t){
   const root=document.documentElement;
   root.classList.add("theme-anim");                 // enable smooth colour transitions just for the switch
   root.setAttribute("data-theme",t);
-  store.set("nba_theme",t); updateThemeUI(); queueSave();
+  store.set("nba_theme",t); updateThemeUI(); prefsChanged();
   clearTimeout(applyTheme._t);
   applyTheme._t=setTimeout(()=>root.classList.remove("theme-anim"),340);
 }
