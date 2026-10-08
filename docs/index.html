@@ -203,6 +203,23 @@
   .crow.zero .nm{color:var(--muted)}
   .crow.zero .nm .lg{opacity:.45}
   .crow.zero .v{color:var(--faint); font-weight:400}
+  /* clickable team rows -> inline list of watched games */
+  .crow .nm[role=button]{cursor:pointer}
+  .crow:not(.zero):hover .nm, .crow:not(.zero):hover .tr{background:var(--hover)}
+  .crow .nm:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .crow .chev{color:var(--faint); display:inline-block; margin-left:1px; transition:transform .15s ease}
+  .crow.open .chev{transform:rotate(90deg); color:var(--fg)}
+  .crow.open .nm{font-weight:600}
+  .cdetail{grid-column:1 / -1; margin:2px 0 10px; padding:10px 12px; border-left:3px solid var(--accent); background:var(--accent-weak)}
+  .cdh{display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-bottom:6px}
+  .cdh .link{color:var(--fg); font-size:12px}
+  .cdl{list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:2px 18px}
+  .cdl li{display:flex; gap:10px; align-items:center; font-size:12.5px; padding:3px 0}
+  .cdd{color:var(--muted); min-width:86px}
+  .cdm{display:inline-flex; align-items:center; gap:6px}
+  .cdm .lg{width:16px; height:16px}
+  .secr{display:inline-flex; align-items:baseline; gap:16px}
+  .expbtn{font-size:11.5px; padding:2px 9px}
 
   .emptyst{border:1px dashed var(--faint); padding:28px 18px; text-align:center; margin:18px 0 6px}
   .emptyst .big{font-size:16px; font-weight:600; margin:0 0 6px}
@@ -272,7 +289,10 @@
   .logincard p{margin:0 0 18px; color:var(--muted); font-size:13px; line-height:1.5}
   .logincard .acctemail{font-weight:600; color:var(--fg); word-break:break-all}
   .logincard .field{display:flex; flex-direction:column; gap:9px}
-  .logincard input[type=email], .logincard input[type=password]{width:100%; text-align:center; padding:9px 10px; font-size:14px}
+  .logincard input[type=email], .logincard input[type=password], .logincard input[type=text]{width:100%; text-align:center; padding:9px 10px; font-size:14px}
+  .logincard .flabel{font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); text-align:left}
+  .logincard .cta.ghost{background:none; color:var(--fg)}
+  .acctbtn{max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .authtabs{display:flex; margin:0 0 16px; border:1px solid var(--rule)}
   .authtab{flex:1; border:0; padding:7px 0; font-size:12.5px; color:var(--muted); background:none}
   .authtab.on{background:var(--fg); color:var(--bg); font-weight:500}
@@ -1817,15 +1837,24 @@ const LOGO_URLS = {
   "UTA": "https://a.espncdn.com/i/teamlogos/nba/500/utah.png",
   "WAS": "https://a.espncdn.com/i/teamlogos/nba/500/wsh.png"
 };
+/* Logos are served from this site (docs/logos/ATL.png …, written by the "Update Logos"
+   workflow). Same-origin images also work in the PNG export. If a local file is
+   missing, fall back to ESPN's CDN, then to an abbreviation chip. */
+const LOGO_DIR="logos/";
 const LOGO={};
 function loadLogos(){
-  for(const [ab,url] of Object.entries(LOGO_URLS)){ LOGO[ab]=url; }
+  for(const ab of Object.keys(LOGO_URLS)){ LOGO[ab]=LOGO_DIR+ab+".png"; }
   render();
 }
+window._lgErr=function(img){
+  if(!img.dataset.f && img.dataset.alt){ img.dataset.f="1"; img.src=img.dataset.alt; return; }
+  const s=document.createElement("span"); s.className="lg ab"; s.setAttribute("aria-hidden","true"); s.textContent=img.dataset.ab||"";
+  img.replaceWith(s);
+};
 function logo(team){
   const ab=ABBR[team]||"";
   return LOGO[ab]
-    ? `<img class="lg" src="${LOGO[ab]}" alt="" loading="lazy">`
+    ? `<img class="lg" src="${LOGO[ab]}" alt="" loading="lazy" data-ab="${ab}" data-alt="${LOGO_URLS[ab]||""}" onerror="_lgErr(this)">`
     : `<span class="lg ab" aria-hidden="true">${ab}</span>`;
 }
 
@@ -1949,7 +1978,27 @@ const sbReady = !!(window.supabase
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false, loginMode="signin";
+let cloudReady=false;        // no writes until the account's saved state has been read (avoids overwriting it)
+let prefsSupported=true;     // false if the `prefs` column hasn't been added yet -> sync watched games only
 function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
+
+/* ---------- username + synced settings ---------- */
+const USERNAME_RE=/^[A-Za-z0-9_.]{3,20}$/;
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function userName(){ return (currentUser && currentUser.user_metadata && currentUser.user_metadata.username) || ""; }
+function collectPrefs(){
+  return { region: state.region,
+           theme: document.documentElement.getAttribute("data-theme") || "",   // "" = follow the device
+           hideScores: !!state.hideScores };
+}
+function applyPrefs(p){
+  if(!p || typeof p!=="object") return;
+  if(typeof p.region==="string" && p.region){ state.region=p.region; store.set("nba_region",p.region); if(typeof renderTzButton==="function") renderTzButton(); }
+  if(p.theme==="light"||p.theme==="dark"){ document.documentElement.setAttribute("data-theme",p.theme); store.set("nba_theme",p.theme); }
+  else if(p.theme===""){ document.documentElement.removeAttribute("data-theme"); store.set("nba_theme",null); }
+  if(typeof p.hideScores==="boolean"){ state.hideScores=p.hideScores; store.set("nba_hide_scores",p.hideScores); state.revealed.clear(); }
+  if(typeof updateThemeUI==="function") updateThemeUI();
+}
 
 async function initStore(){
   if(!sb){ updateAccountBtn(); return; }        // not configured -> local-only, hide the account button
@@ -1961,9 +2010,9 @@ async function initStore(){
     currentUser = u;
     if(u){
       state.sync="account";
-      if(changed){ firstPull=true; pullCloud(); }
+      if(changed){ firstPull=true; cloudReady=false; pullCloud(); }
     }else{
-      state.sync="local";
+      state.sync="local"; cloudReady=false;
     }
     if(evt==="PASSWORD_RECOVERY"){ loginMode="recovery"; openLogin(); }
     updateAccountBtn();
@@ -1977,31 +2026,47 @@ async function initStore(){
 
 async function pullCloud(){
   if(!sb || !currentUser) return;
-  const { data, error } = await sb.from("trackers")
-    .select("watched").eq("user_id", currentUser.id).maybeSingle();
+  let { data, error } = await sb.from("trackers")
+    .select(prefsSupported ? "watched, prefs" : "watched").eq("user_id", currentUser.id).maybeSingle();
+  if(error && prefsSupported){
+    // most likely the `prefs` column hasn't been added yet -> keep syncing watched games only
+    prefsSupported=false;
+    ({ data, error } = await sb.from("trackers").select("watched").eq("user_id", currentUser.id).maybeSingle());
+  }
   if(error){ state.sync="local"; setStatus(); return; }
   const cloud = new Set(Array.isArray(data && data.watched) ? data.watched.map(String) : []);
+  const cloudPrefs = (data && data.prefs && typeof data.prefs==="object") ? data.prefs : null;
+  let needSave=false;
   if(firstPull){
     firstPull=false;
-    // First sign-in on this device: fold anything saved in this browser into the account.
+    // First sign-in on this device: fold anything ticked in this session into the account.
     const union = new Set([...cloud, ...state.watched]);
     state.watched = union;
-    if(!sameSet(union, cloud)) queueSave();
+    if(!sameSet(union, cloud)) needSave=true;
+    // Settings follow the account; if the account has none yet, save this device's.
+    if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
+    else if(prefsSupported) needSave=true;
   }else{
     state.watched = cloud;
+    if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
   }
+  cloudReady=true;
+  if(needSave) queueSave();
   setStatus(); render();
 }
 
 function queueSave(){
-  if(!sb || !currentUser) return;             // logged out -> stays in this browser only
+  if(!sb || !currentUser || !cloudReady) return;   // logged out, or account not loaded yet
   clearTimeout(writeTimer);
   writeTimer=setTimeout(async ()=>{
     if(cloudBusy){ queueSave(); return; }       // a write is in flight; try again shortly
     cloudBusy=true;
     const row={ user_id: currentUser.id, watched:[...state.watched], updated_at:new Date().toISOString() };
-    try{ await sb.from("trackers").upsert(row); }
-    catch(e){ /* keep the local copy; next change retries */ }
+    if(prefsSupported) row.prefs=collectPrefs();
+    try{
+      const { error } = await sb.from("trackers").upsert(row);
+      if(error && row.prefs){ prefsSupported=false; delete row.prefs; await sb.from("trackers").upsert(row); }
+    }catch(e){ /* keep the local copy; next change retries */ }
     cloudBusy=false;
   },500);
 }
@@ -2012,8 +2077,8 @@ function updateAccountBtn(){
   if(!b) return;
   if(!sb){ b.hidden=true; return; }            // not configured -> no account button
   b.hidden=false;
-  if(currentUser){ b.textContent="Account"; b.classList.add("in"); }
-  else{ b.textContent="Sign in"; b.classList.remove("in"); }
+  if(currentUser){ const u=userName(); b.textContent=u?"@"+u:"Account"; b.title=u?"Account":""; b.classList.add("in"); }
+  else{ b.textContent="Sign in"; b.title=""; b.classList.remove("in"); }
 }
 function friendlyAuthError(error){
   const m=((error&&error.message)||"").toLowerCase();
@@ -2054,11 +2119,31 @@ function renderLogin(){
 
   /* --- signed in --- */
   if(currentUser){
+    const u=userName();
     el.innerHTML =
-      `<h2>You're signed in</h2>`
-      + `<p>Your watched games are saved to your account and sync across your devices.<br><span class="acctemail">${currentUser.email||""}</span></p>`
-      + `<div class="field"><button class="cta" id="signout" type="button">Sign out</button></div>`
+      `<h2>${u?"@"+esc(u):"You're signed in"}</h2>`
+      + `<p>Your watched games and settings (time zone, theme, hide scores) are saved to your account and sync across your devices.<br><span class="acctemail">${esc(currentUser.email||"")}</span></p>`
+      + `<div class="field">`
+      +   `<label class="flabel" for="acctuser">Username</label>`
+      +   `<input id="acctuser" type="text" placeholder="username" autocomplete="username" maxlength="20" value="${esc(u)}" spellcheck="false" autocapitalize="off">`
+      +   `<button class="cta ghost" id="saveuser" type="button">${u?"Update username":"Save username"}</button>`
+      + `</div>`
+      + `<div class="loginmsg" id="authmsg"></div>`
+      + `<div class="field" style="margin-top:14px"><button class="cta" id="signout" type="button">Sign out</button></div>`
       + `<button class="loginskip" id="logindone" type="button">Done</button>`;
+    const inp=el.querySelector("#acctuser"), msg=el.querySelector("#authmsg"), sv=el.querySelector("#saveuser");
+    const saveUser=async ()=>{
+      const name=(inp.value||"").trim();
+      if(!USERNAME_RE.test(name)){ msg.className="loginmsg"; msg.textContent="3–20 characters: letters, numbers, _ or ."; return; }
+      if(name===u){ msg.className="loginmsg"; msg.textContent="That's already your username."; return; }
+      sv.disabled=true; msg.className="loginmsg"; msg.textContent="Saving…";
+      const { data, error } = await sb.auth.updateUser({ data:{ username:name } });
+      sv.disabled=false;
+      if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
+      if(data && data.user) currentUser=data.user;
+      updateAccountBtn(); renderLogin(); toast("Username saved");
+    };
+    sv.onclick=saveUser; inp.onkeydown=e=>{ if(e.key==="Enter") saveUser(); };
     el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); closeLogin(); };
     el.querySelector("#logindone").onclick=closeLogin;
     return;
@@ -2074,6 +2159,7 @@ function renderLogin(){
     + `<h2>${signup?"Create your account":"Welcome back"}</h2>`
     + `<p>${signup?"Sign up to save the games you've watched and sync them across every device.":"Sign in to pick your tracker back up on any device."}</p>`
     + `<div class="field">`
+    +   (signup?`<input id="authuser" type="text" placeholder="Username (shown on your shared season)" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off">`:``)
     +   `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
     +   `<input id="authpass" type="password" placeholder="Password" autocomplete="${signup?"new-password":"current-password"}">`
     +   `<button class="cta" id="authgo" type="button">${signup?"Create account":"Sign in"}</button>`
@@ -2087,13 +2173,15 @@ function renderLogin(){
 
   el.querySelectorAll(".authtab").forEach(t=>t.onclick=()=>{ loginMode=t.dataset.m; renderLogin(); });
 
+  const userEl=el.querySelector("#authuser");
   const go=async ()=>{
-    const email=(emailEl.value||"").trim(), pass=(passEl.value||"");
+    const email=(emailEl.value||"").trim(), pass=(passEl.value||""), uname=userEl?(userEl.value||"").trim():"";
+    if(signup && !USERNAME_RE.test(uname)){ msg.className="loginmsg"; msg.textContent="Pick a username: 3–20 characters, letters, numbers, _ or ."; return; }
     if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email."; return; }
     if(pass.length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
     btn.disabled=true; msg.className="loginmsg"; msg.textContent=signup?"Creating account…":"Signing in…";
     if(signup){
-      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      const { data, error } = await sb.auth.signUp({ email, password: pass, options:{ data:{ username: uname } } });
       btn.disabled=false;
       if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
       if(!(data && data.session)){            // email confirmation is ON -> one-time verify email
@@ -2108,6 +2196,7 @@ function renderLogin(){
   };
   btn.onclick=go;
   emailEl.onkeydown=e=>{ if(e.key==="Enter") passEl.focus(); };
+  if(userEl) userEl.onkeydown=e=>{ if(e.key==="Enter") emailEl.focus(); };
   passEl.onkeydown=e=>{ if(e.key==="Enter") go(); };
 
   const forgot=el.querySelector("#forgot");
@@ -2121,7 +2210,7 @@ function renderLogin(){
   };
 
   el.querySelector("#loginskip").onclick=closeLogin;
-  setTimeout(()=>emailEl.focus(),40);
+  setTimeout(()=>(userEl||emailEl).focus(),40);
 }
 function openLogin(){ if(!sb) return; renderLogin(); const m=document.getElementById("loginmask"); if(m) m.hidden=false; }
 function closeLogin(){ const m=document.getElementById("loginmask"); if(m) m.hidden=true; }
@@ -2164,7 +2253,7 @@ function renderTzList(q){
   list.querySelectorAll(".tzrow[data-tz]").forEach(r=>r.onclick=()=>{
     state.region=r.dataset.tz; store.set("nba_region",state.region);
     state.cal=null; state.selDay=null;
-    closeTz(); renderTzButton(); render();
+    closeTz(); renderTzButton(); render(); queueSave();
   });
 }
 function openTz(){ document.getElementById("tzpop").hidden=false; const s=document.getElementById("tzsearch"); s.value=""; renderTzList(""); s.focus(); }
@@ -2403,7 +2492,7 @@ function renderList(){
   v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; state.day=null; render(); };
   const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
   const jt=v.querySelector("#f-today"); if(jt) jt.onclick=jumpToToday;
-  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); };
+  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); queueSave(); };
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
   if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
@@ -2523,10 +2612,14 @@ function renderStats(){
     const rows=pool.map(t=>[t,s.counts[t]]).sort((a,b)=>b[1]-a[1]||short(a[0]).localeCompare(short(b[0])));
     const max=Math.max(1,...rows.map(r=>r[1]));
     const top=rows[0][1];
-    const chart=rows.map(([t,c])=>`<div class="crow${c===0?" zero":""}${c===top&&c>0?" top":""}">
-        <span class="nm">${logo(t)}${short(t)}</span>
+    const chart=rows.map(([t,c])=>{
+      const open=_statOpen===t && c>0;
+      const nmAttrs=c>0?` role="button" tabindex="0" aria-expanded="${open}" title="See the ${c} game${c===1?"":"s"} you watched"`:"";
+      return `<div class="crow${c===0?" zero":""}${c===top&&c>0?" top":""}${open?" open":""}" data-team="${t}">
+        <span class="nm"${nmAttrs}>${logo(t)}${short(t)}${c>0?`<span class="chev" aria-hidden="true">&rsaquo;</span>`:""}</span>
         <span class="tr"><span class="fill" style="width:calc((100% - 34px) * ${(c/max).toFixed(4)})"></span><span class="v">${c}</span></span>
-      </div>`).join("");
+      </div>${open?teamDetailHtml(t):""}`;
+    }).join("");
     const seg=[["all","All"],["east","East"],["west","West"]].map(([k,l])=>`<button data-c="${k}" class="${state.conf===k?"on":""}">${l}</button>`).join("");
     html=`<div class="sumline">
         <span><b>${s.total}</b>games watched</span>
@@ -2534,13 +2627,160 @@ function renderStats(){
         <span><b>${s.seen}<span style="font-size:13px;color:var(--muted);font-weight:400">/30</span></b>teams seen</span>
       </div>
       ${badgeSec}
-      <div class="sec"><h2>Games watched by team</h2><span class="seg">${seg}</span></div>
+      <div class="sec"><h2>Games watched by team</h2><span class="secr"><span class="seg">${seg}</span><button class="expbtn" id="exportPng" type="button">Export PNG</button></span></div>
       <div class="chart">${chart}</div>
-      <p class="totals">A watched game counts for both teams.</p>`;
+      <p class="totals">A watched game counts for both teams. Tap a team to see which games you watched.</p>`;
   }
   const v=document.getElementById("view"); v.innerHTML=html;
   const go=v.querySelector("#goSched"); if(go) go.onclick=()=>setView("list");
   v.querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>{ state.conf=b.dataset.c; render(); });
+  const ex=v.querySelector("#exportPng"); if(ex) ex.onclick=()=>exportStatsPng(ex);
+  const ch=v.querySelector(".chart");
+  if(ch){
+    const act=(el,fromKey)=>{
+      const r=el.closest(".crow[data-team]"); if(!r||r.classList.contains("zero")) return;
+      const t=r.dataset.team; _statOpen=(_statOpen===t)?null:t; render();
+      if(fromKey){ const n=document.querySelector(`.crow[data-team="${t}"] .nm`); if(n) n.focus(); }
+    };
+    ch.onclick=e=>{
+      const goT=e.target.closest("[data-goteam]");
+      if(goT){ state.team=goT.dataset.goteam; state.day=null; _statOpen=null; setView("list"); window.scrollTo(0,0); return; }
+      if(e.target.closest(".cdetail")) return;
+      act(e.target,false);
+    };
+    ch.onkeydown=e=>{ if((e.key==="Enter"||e.key===" ")&&e.target.matches(".nm[role=button]")){ e.preventDefault(); act(e.target,true); } };
+  }
+}
+
+/* ---------- stats: expandable per-team list of watched games (scores never shown) ---------- */
+let _statOpen=null;
+function teamDetailHtml(T){
+  const gs=regularGames().filter(g=>(g.away===T||g.home===T)&&state.watched.has(g.id)).sort((a,b)=>a.ms-b.ms);
+  const fmt=new Intl.DateTimeFormat("en-GB",{timeZone:state.region,weekday:"short",day:"numeric",month:"short"});
+  const items=gs.map(g=>{ const home=g.home===T, opp=home?g.away:g.home;
+    return `<li><span class="cdd">${fmt.format(new Date(g.ms))}</span><span class="cdm">${home?"vs":"@"} ${logo(opp)}${short(opp)}</span></li>`; }).join("");
+  return `<div class="cdetail">
+      <div class="cdh"><span>${gs.length} watched &middot; scores hidden</span><button class="link" type="button" data-goteam="${T}">Full ${short(T)} schedule &rarr;</button></div>
+      <ul class="cdl">${items}</ul>
+    </div>`;
+}
+
+/* ---------- stats: high-resolution PNG export of games watched per team ---------- */
+function _loadImg(src){
+  return new Promise(res=>{
+    if(!src) return res(null);
+    const im=new Image(); im.crossOrigin="anonymous";
+    const t=setTimeout(()=>res(null),5000);
+    im.onload=()=>{ clearTimeout(t); res(im); };
+    im.onerror=()=>{ clearTimeout(t); res(null); };      // no CORS -> fall back to a text chip (keeps canvas exportable)
+    im.src=src+(src.includes("?")?"&":"?")+"x=1";
+  });
+}
+function _drawMark(x,cx,cy,r,color){
+  const k=r/150;
+  x.save(); x.strokeStyle=color; x.lineWidth=24*k;
+  x.beginPath(); x.arc(cx,cy,r,0,Math.PI*2); x.stroke();
+  x.fillStyle=color; x.beginPath();
+  x.moveTo(cx-42*k,cy-80*k); x.lineTo(cx-42*k,cy+80*k); x.lineTo(cx+94*k,cy); x.closePath(); x.fill();
+  x.restore();
+}
+function _fit(x,text,maxW){
+  if(x.measureText(text).width<=maxW) return text;
+  let t=text; while(t.length>1 && x.measureText(t+"…").width>maxW) t=t.slice(0,-1);
+  return t+"…";
+}
+async function exportStatsPng(btn){
+  const label=btn?btn.textContent:"";
+  if(btn){ btn.disabled=true; btn.textContent="Exporting…"; }
+  try{
+    const s=tally();
+    const rows=TEAMS.map(t=>[t,s.counts[t]]).sort((a,b)=>b[1]-a[1]||short(a[0]).localeCompare(short(b[0])));
+    const cs=getComputedStyle(document.documentElement), C=(k,d)=>cs.getPropertyValue(k).trim()||d;
+    const bg=C("--bg","#ffffff"), fg=C("--fg","#141414"), muted=C("--muted","#737373"), faint=C("--faint","#b0b0b0"),
+          rule=C("--rule","#e4e4e4"), accent=C("--accent","#e03a2f"), accent2=C("--accent2","#f5b800"), chip=C("--chip","#efefef");
+    try{ await document.fonts.ready; }catch(e){}
+    const F='"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+    // layout in CSS px; rendered at 3x for a crisp ~3240px-wide image
+    const W=1080, PAD=64, GAP=48, ROW=56, PER=15, FOOT=110, HEAD=PAD+224;
+    const H=HEAD+PER*ROW+FOOT;
+    const SCALE=Math.min(3, Math.sqrt(16e6/(W*H)));       // stay under mobile canvas-size limits
+    const cv=document.createElement("canvas"); cv.width=Math.round(W*SCALE); cv.height=Math.round(H*SCALE);
+    const x=cv.getContext("2d"); x.scale(SCALE,SCALE);
+    x.fillStyle=bg; x.fillRect(0,0,W,H);
+
+    // header: mark, season kicker, title
+    _drawMark(x, PAD+28, PAD+30, 26, accent);
+    x.textBaseline="alphabetic"; x.textAlign="left";
+    x.fillStyle=muted; x.font=`500 18px ${F}`;
+    x.fillText((document.getElementById("kicker")||{}).textContent||"NBA", PAD+76, PAD+20);
+    x.fillStyle=fg; x.font=`600 44px ${F}`; x.fillText("My season so far", PAD+76, PAD+64);
+    const uname=userName();
+    if(uname){
+      x.textAlign="right";
+      x.fillStyle=accent; x.font=`600 28px ${F}`; x.fillText(_fit(x,"@"+uname,380), W-PAD, PAD+64);
+      x.fillStyle=muted; x.font=`500 16px ${F}`; x.fillText("Watch tracker", W-PAD, PAD+20);
+      x.textAlign="left";
+    }
+
+    // summary numbers
+    const n=regularGames().length, pct=n?(s.total/n*100).toFixed(1):"0.0";
+    let sx=PAD; const sy=PAD+144;
+    for(const [num,lab] of [[String(s.total),"games watched"],[pct+"%","of the season"],[s.seen+"/30","teams seen"]]){
+      x.fillStyle=fg; x.font=`600 40px ${F}`; x.fillText(num,sx,sy); sx+=x.measureText(num).width+10;
+      x.fillStyle=muted; x.font=`400 18px ${F}`; x.fillText(lab,sx,sy); sx+=x.measureText(lab).width+40;
+    }
+
+    // section caption + rule
+    x.fillStyle=muted; x.font=`500 14px ${F}`; x.fillText("GAMES WATCHED BY TEAM", PAD, PAD+196);
+    x.fillStyle=fg; x.fillRect(PAD, PAD+208, W-2*PAD, 2);
+
+    // team rows in two columns
+    // local logos first (same-origin, always exportable), then ESPN, then a text chip
+    const logos=await Promise.all(rows.map(([t])=>_loadImg(LOGO[ABBR[t]]).then(im=>im||_loadImg(LOGO_URLS[ABBR[t]]))));
+    const max=Math.max(1,...rows.map(r=>r[1])), topV=rows[0][1];
+    const colW=(W-2*PAD-GAP)/2;
+    rows.forEach(([t,c],i)=>{
+      const col=Math.floor(i/PER), r=i%PER;
+      const cx=PAD+col*(colW+GAP), cy=HEAD+r*ROW+ROW/2;
+      const zero=c===0;
+      x.textBaseline="middle";
+      x.fillStyle=faint; x.font=`500 16px ${F}`; x.textAlign="right"; x.fillText(String(i+1), cx+24, cy);
+      x.textAlign="left";
+      const im=logos[i];
+      x.globalAlpha=zero?0.45:1;
+      if(im){ x.drawImage(im, cx+34, cy-15, 30, 30); }
+      else{ x.fillStyle=chip; x.fillRect(cx+34, cy-15, 30, 30); x.fillStyle=muted; x.font=`600 10px ${F}`; x.textAlign="center"; x.fillText(ABBR[t]||"", cx+49, cy+1); x.textAlign="left"; }
+      x.globalAlpha=1;
+      x.fillStyle=zero?muted:fg; x.font=`500 20px ${F}`;
+      x.fillText(_fit(x,short(t),150), cx+74, cy);
+      const barX=cx+234, barMax=colW-234-46;
+      const bw=zero?0:Math.max(4, barMax*(c/max));
+      if(bw){ x.fillStyle=(c===topV)?accent2:accent; x.fillRect(barX, cy-8, bw, 16); }
+      x.fillStyle=zero?faint:fg; x.font=`${zero?400:600} 20px ${F}`; x.fillText(String(c), barX+bw+(bw?10:0), cy);
+      x.fillStyle=rule; x.fillRect(cx, HEAD+(r+1)*ROW-1, colW, 1);
+    });
+
+    // footer
+    x.textBaseline="alphabetic";
+    const asOf=new Intl.DateTimeFormat("en-GB",{timeZone:state.region,day:"numeric",month:"short",year:"numeric"}).format(new Date());
+    x.fillStyle=muted; x.font=`500 16px ${F}`; x.textAlign="left";
+    x.fillText(`Watch tracker · as of ${asOf}`, PAD, H-PAD+14);
+    x.textAlign="right"; x.fillText("A watched game counts for both teams.", W-PAD, H-PAD+14);
+
+    const blob=await new Promise(res=>cv.toBlob(res,"image/png"));
+    if(!blob) throw new Error("export failed");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=`nba-watch-tracker-${uname?uname+"-":""}${dateKey(Date.now(),state.region)}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+    toast("PNG saved");
+  }catch(e){
+    toast("Couldn't create the image — try again");
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent=label||"Export PNG"; }
+  }
 }
 function wireGames(root){
   root.querySelectorAll(".game[data-id]").forEach(el=>{
@@ -2608,7 +2848,7 @@ function applyTheme(t){
   const root=document.documentElement;
   root.classList.add("theme-anim");                 // enable smooth colour transitions just for the switch
   root.setAttribute("data-theme",t);
-  store.set("nba_theme",t); updateThemeUI();
+  store.set("nba_theme",t); updateThemeUI(); queueSave();
   clearTimeout(applyTheme._t);
   applyTheme._t=setTimeout(()=>root.classList.remove("theme-anim"),340);
 }
