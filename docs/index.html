@@ -2003,7 +2003,24 @@ function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b
 /* ---------- username + synced settings ---------- */
 const USERNAME_RE=/^[A-Za-z0-9_.]{3,20}$/;
 function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function userName(){ return (currentUser && currentUser.user_metadata && currentUser.user_metadata.username) || ""; }
+function userName(){                            // only ever show a username that follows the rules
+  const n=(currentUser && currentUser.user_metadata && currentUser.user_metadata.username) || "";
+  return (typeof n==="string" && USERNAME_RE.test(n)) ? n : "";
+}
+const USERNAME_HINT="3–20 characters: letters (a–z), numbers, _ or .";
+/* Username boxes: anything other than letters, numbers, _ and . is removed as you type or paste. */
+function wireUsernameInput(inp,msg){
+  if(!inp) return;
+  inp.setAttribute("pattern","[A-Za-z0-9_.]{3,20}"); inp.setAttribute("title",USERNAME_HINT);
+  inp.addEventListener("input",e=>{
+    if(e.isComposing) return;                     // let IME composition finish first
+    const v=inp.value, clean=v.replace(/[^A-Za-z0-9_.]/g,"").slice(0,20);
+    if(clean===v) return;
+    const pos=Math.max(0,(inp.selectionStart||0)-(v.length-clean.length));
+    inp.value=clean; try{ inp.setSelectionRange(pos,pos); }catch(_){}
+    if(msg){ msg.className="loginmsg"; msg.textContent="Only letters (a–z), numbers, _ and . are allowed."; }
+  });
+}
 function collectPrefs(){
   return { region: state.region,
            theme: document.documentElement.getAttribute("data-theme") || "",   // "" = follow the device
@@ -2290,6 +2307,7 @@ function friendlyAuthError(error){
   if(m.includes("password")&&m.includes("6")) return "Password must be at least 6 characters.";
   if(m.includes("valid email")||(m.includes("email")&&m.includes("invalid"))) return "Enter a valid email address.";
   if(m.includes("not confirmed")) return "Confirm your email first — check your inbox.";
+  if(m.includes("invalid username")||/database error (saving new|updating) user/.test(m)) return "That username isn't allowed. Use "+USERNAME_HINT;
   return (error&&error.message) || "Something went wrong — try again.";
 }
 function renderLogin(){
@@ -2335,9 +2353,10 @@ function renderLogin(){
       + `<div class="field" style="margin-top:14px"><button class="cta" id="signout" type="button">Sign out</button></div>`
       + `<button class="loginskip" id="logindone" type="button">Done</button>`;
     const inp=el.querySelector("#acctuser"), msg=el.querySelector("#authmsg"), sv=el.querySelector("#saveuser");
+    wireUsernameInput(inp,msg);
     const saveUser=async ()=>{
       const name=(inp.value||"").trim();
-      if(!USERNAME_RE.test(name)){ msg.className="loginmsg"; msg.textContent="3–20 characters: letters, numbers, _ or ."; return; }
+      if(!USERNAME_RE.test(name)){ msg.className="loginmsg"; msg.textContent=USERNAME_HINT; return; }
       if(name===u){ msg.className="loginmsg"; msg.textContent="That's already your username."; return; }
       sv.disabled=true; msg.className="loginmsg"; msg.textContent="Saving…";
       const { data, error } = await sb.auth.updateUser({ data:{ username:name } });
@@ -2385,9 +2404,10 @@ function renderLogin(){
   el.querySelectorAll(".authtab").forEach(t=>t.onclick=()=>{ loginMode=t.dataset.m; renderLogin(); });
 
   const userEl=el.querySelector("#authuser");
+  wireUsernameInput(userEl,msg);
   const go=async ()=>{
     const email=(emailEl.value||"").trim(), pass=(passEl.value||""), uname=userEl?(userEl.value||"").trim():"";
-    if(signup && !USERNAME_RE.test(uname)){ msg.className="loginmsg"; msg.textContent="Pick a username: 3–20 characters, letters, numbers, _ or ."; return; }
+    if(signup && !USERNAME_RE.test(uname)){ msg.className="loginmsg"; msg.textContent="Pick a username: "+USERNAME_HINT; return; }
     if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email."; return; }
     if(pass.length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
     btn.disabled=true; msg.className="loginmsg"; msg.textContent=signup?"Creating account…":"Signing in…";
