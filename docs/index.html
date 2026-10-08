@@ -1990,6 +1990,8 @@ const sbReady = !!(window.supabase
   && /^https:\/\/.+\.supabase\.co/.test(SUPABASE_URL)
   && SUPABASE_KEY.indexOf("sb_publishable_")===0
   && SUPABASE_KEY.indexOf("PASTE")===-1);
+// Where links in sign-up / password emails send people back to: this exact page (not the site root).
+const APP_URL=()=>location.origin+location.pathname;
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 let currentUser=null, writeTimer=null, loginMode="signin";
@@ -2390,7 +2392,7 @@ function renderLogin(){
     if(pass.length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
     btn.disabled=true; msg.className="loginmsg"; msg.textContent=signup?"Creating account…":"Signing in…";
     if(signup){
-      const { data, error } = await sb.auth.signUp({ email, password: pass, options:{ data:{ username: uname } } });
+      const { data, error } = await sb.auth.signUp({ email, password: pass, options:{ data:{ username: uname }, emailRedirectTo: APP_URL() } });
       btn.disabled=false;
       if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
       if(!(data && data.session)){            // email confirmation is ON -> one-time verify email
@@ -2413,7 +2415,7 @@ function renderLogin(){
     const email=(emailEl.value||"").trim();
     if(!email){ msg.className="loginmsg"; msg.textContent="Type your email above first, then tap Forgot password."; return; }
     msg.className="loginmsg"; msg.textContent="Sending reset link…";
-    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.href.split("#")[0] });
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: APP_URL() });
     msg.className = error ? "loginmsg" : "loginmsg ok";
     msg.textContent = error ? friendlyAuthError(error) : "Check your email for a password-reset link.";
   };
