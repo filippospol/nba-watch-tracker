@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="icon" type="image/png" id="favicon" href="icon.png"><link rel="apple-touch-icon" href="icon.png"><meta name="theme-color" content="#121212"></head><body>
 <title>NBA Watch Tracker</title>
 <style>
   :root{
@@ -220,20 +220,40 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  /* frozen header: stays pinned through the sign-in bar while the page scrolls */
+  .topbar{position:sticky; top:0; z-index:20; background:var(--bg); padding-top:10px; box-shadow:0 10px 18px -14px rgba(0,0,0,.4)}
+  .brand{display:flex; align-items:center; gap:12px}
+  .brand .logo{width:42px; height:42px; border-radius:11px; flex:none; object-fit:contain; border:1px solid var(--rule); background:var(--bg)}
+  .brand .kicker::before{display:none}
+  .topright{display:flex; align-items:flex-start; gap:12px}
+  .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
+  .themebtn:hover{color:var(--fg)}
+  .themebtn svg{width:16px; height:16px}
+  @media (max-width:480px){ .brand .logo{width:36px; height:36px} }
+</style>
 <div class="wrap">
+  <div class="topbar">
   <div class="mast">
-    <div>
-      <div class="kicker" id="kicker">NBA</div>
-      <h1>Watch tracker</h1>
-    </div>
-    <div class="tz" id="tz">
-      <span>Times</span>
-      <button class="tzbtn" id="tzbtn" type="button"><span id="tzname">Greece</span><span class="off" id="tzoff">GMT+3</span><span class="off">&#9662;</span></button>
-      <div class="tzpop" id="tzpop" hidden>
-        <input type="text" id="tzsearch" placeholder="Search country" autocomplete="off">
-        <div class="tzlist" id="tzlist"></div>
+    <div class="brand">
+      <img class="logo" src="icon.png" alt="NBA Watch Tracker logo" width="42" height="42">
+      <div>
+        <div class="kicker" id="kicker">NBA</div>
+        <h1>Watch tracker</h1>
       </div>
     </div>
+    <div class="topright">
+      <button class="themebtn" id="themebtn" type="button" title="Switch theme" aria-label="Switch between light and dark theme"></button>
+      <div class="tz" id="tz">
+        <span>Times</span>
+        <button class="tzbtn" id="tzbtn" type="button"><span id="tzname">Greece</span><span class="off" id="tzoff">GMT+3</span><span class="off">&#9662;</span></button>
+        <div class="tzpop" id="tzpop" hidden>
+          <input type="text" id="tzsearch" placeholder="Search country" autocomplete="off">
+          <div class="tzlist" id="tzlist"></div>
+        </div>
+      </div>
+    </div>
+  </div>
   </div>
   <p class="status" id="status">Loading</p>
   <div class="authbar" id="authbar"></div>
@@ -2264,7 +2284,33 @@ function setView(v){
 }
 document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 
+/* ---------- theme: light / dark toggle (top-right), with matching logo ---------- */
+const SUN_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>';
+const MOON_SVG='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>';
+function effectiveTheme(){
+  const f=document.documentElement.getAttribute("data-theme");
+  if(f==="light"||f==="dark") return f;
+  return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+}
+function updateThemeUI(){
+  const t=effectiveTheme();
+  const src = t==="dark" ? "icon.png" : "icon-light.png";
+  const logo=document.querySelector(".brand .logo"); if(logo && logo.getAttribute("src")!==src) logo.setAttribute("src",src);
+  const fav=document.getElementById("favicon"); if(fav) fav.setAttribute("href",src);
+  const btn=document.getElementById("themebtn"); if(btn) btn.innerHTML = (t==="dark" ? SUN_SVG : MOON_SVG);
+}
+function applyTheme(t){ document.documentElement.setAttribute("data-theme",t); store.set("nba_theme",t); updateThemeUI(); }
+function initTheme(){
+  const saved=store.get("nba_theme",null);
+  if(saved==="light"||saved==="dark") document.documentElement.setAttribute("data-theme",saved);
+  updateThemeUI();
+  const btn=document.getElementById("themebtn");
+  if(btn) btn.onclick=()=>applyTheme(effectiveTheme()==="dark"?"light":"dark");
+  if(window.matchMedia){ try{ matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{ if(!document.documentElement.getAttribute("data-theme")) updateThemeUI(); }); }catch(e){} }
+}
+
 function init(){
+  initTheme();
   buildRegion();
   state.seed=loadSeed(); rebuildGames();
   setView("list"); setStatus();
