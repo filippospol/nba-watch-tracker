@@ -245,7 +245,13 @@
   .logincard p{margin:0 0 18px; color:var(--muted); font-size:13px; line-height:1.5}
   .logincard .acctemail{font-weight:600; color:var(--fg); word-break:break-all}
   .logincard .field{display:flex; flex-direction:column; gap:9px}
-  .logincard input[type=email]{width:100%; text-align:center; padding:9px 10px; font-size:14px}
+  .logincard input[type=email], .logincard input[type=password]{width:100%; text-align:center; padding:9px 10px; font-size:14px}
+  .authtabs{display:flex; margin:0 0 16px; border:1px solid var(--rule)}
+  .authtab{flex:1; border:0; padding:7px 0; font-size:12.5px; color:var(--muted); background:none}
+  .authtab.on{background:var(--fg); color:var(--bg); font-weight:500}
+  .authtab:not(.on):hover{color:var(--fg)}
+  .loginlink{display:block; margin:12px auto 0; border:0; background:none; color:var(--muted); font-size:12px; text-decoration:underline; text-underline-offset:2px; cursor:pointer; padding:2px}
+  .loginlink:hover{color:var(--fg)}
   .logincard .cta{padding:10px; border:1px solid var(--fg); background:var(--fg); color:var(--bg); font-weight:500}
   .logincard .cta:hover{opacity:.88}
   .logincard .cta:disabled{opacity:.5; cursor:default}
@@ -1897,7 +1903,7 @@ const sbReady = !!(window.supabase
   && SUPABASE_KEY.indexOf("PASTE")===-1);
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false;
+let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false, loginMode="signin";
 function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
 
 async function initStore(){
@@ -1914,10 +1920,11 @@ async function initStore(){
     }else{
       state.sync="local";
     }
+    if(evt==="PASSWORD_RECOVERY"){ loginMode="recovery"; openLogin(); }
     updateAccountBtn();
     const mask=document.getElementById("loginmask");
     if(mask && !mask.hidden) renderLogin();       // keep an open login screen in sync
-    if(evt==="SIGNED_IN"){ closeLogin(); toast("Signed in — your tracker is now saved"); }
+    if(evt==="SIGNED_IN" && loginMode!=="recovery"){ closeLogin(); toast("Signed in — your tracker is now saved"); }
     setStatus(); render();
   });
   updateAccountBtn(); setStatus();
@@ -1954,7 +1961,7 @@ function queueSave(){
   },500);
 }
 
-/* ---------- account button + dedicated login screen (magic-link email) ---------- */
+/* ---------- account button + dedicated login screen (email + password) ---------- */
 function updateAccountBtn(){
   const b=document.getElementById("acctbtn");
   if(!b) return;
@@ -1963,9 +1970,44 @@ function updateAccountBtn(){
   if(currentUser){ b.textContent="Account"; b.classList.add("in"); }
   else{ b.textContent="Sign in"; b.classList.remove("in"); }
 }
+function friendlyAuthError(error){
+  const m=((error&&error.message)||"").toLowerCase();
+  if(m.includes("invalid login")) return "That email or password doesn't match.";
+  if(m.includes("already registered")||m.includes("already been registered")||m.includes("user already")) return "That email already has an account — switch to Sign in.";
+  if(m.includes("password")&&m.includes("6")) return "Password must be at least 6 characters.";
+  if(m.includes("valid email")||(m.includes("email")&&m.includes("invalid"))) return "Enter a valid email address.";
+  if(m.includes("not confirmed")) return "Confirm your email first — check your inbox.";
+  return (error&&error.message) || "Something went wrong — try again.";
+}
 function renderLogin(){
   const el=document.getElementById("logincontent");
   if(!el) return;
+
+  /* --- after a reset link: set a new password --- */
+  if(loginMode==="recovery"){
+    el.innerHTML =
+      `<h2>Set a new password</h2>`
+      + `<p>Choose a new password for your account.</p>`
+      + `<div class="field">`
+      +   `<input id="newpass" type="password" placeholder="New password (6+ characters)" autocomplete="new-password">`
+      +   `<button class="cta" id="savepass" type="button">Save password</button>`
+      + `</div>`
+      + `<div class="loginmsg" id="authmsg"></div>`;
+    const pass=el.querySelector("#newpass"), msg=el.querySelector("#authmsg"), btn=el.querySelector("#savepass");
+    const save=async ()=>{
+      if((pass.value||"").length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
+      btn.disabled=true; msg.className="loginmsg"; msg.textContent="Saving…";
+      const { error } = await sb.auth.updateUser({ password: pass.value });
+      btn.disabled=false;
+      if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
+      loginMode="signin"; closeLogin(); toast("Password updated — you're signed in");
+    };
+    btn.onclick=save; pass.onkeydown=e=>{ if(e.key==="Enter") save(); };
+    setTimeout(()=>pass.focus(),40);
+    return;
+  }
+
+  /* --- signed in --- */
   if(currentUser){
     el.innerHTML =
       `<h2>You're signed in</h2>`
@@ -1974,31 +2016,67 @@ function renderLogin(){
       + `<button class="loginskip" id="logindone" type="button">Done</button>`;
     el.querySelector("#signout").onclick=async ()=>{ await sb.auth.signOut(); closeLogin(); };
     el.querySelector("#logindone").onclick=closeLogin;
-  }else{
-    el.innerHTML =
-      `<h2>Save your season</h2>`
-      + `<p>Sign in to save the games you've watched and keep them in sync across every device. No password — we'll email you a one-tap link.</p>`
-      + `<div class="field">`
-      +   `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
-      +   `<button class="cta" id="authsend" type="button">Email me a sign-in link</button>`
-      + `</div>`
-      + `<div class="loginmsg" id="authmsg"></div>`
-      + `<button class="loginskip" id="loginskip" type="button">Continue browsing without saving</button>`;
-    const emailEl=el.querySelector("#authemail"), msg=el.querySelector("#authmsg"), btn=el.querySelector("#authsend");
-    const send=async ()=>{
-      const email=(emailEl.value||"").trim();
-      if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email first."; return; }
-      btn.disabled=true; msg.className="loginmsg"; msg.textContent="Sending…";
-      const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.href.split("#")[0] } });
-      btn.disabled=false;
-      if(error){ msg.className="loginmsg"; msg.textContent="Something went wrong — try again."; }
-      else{ msg.className="loginmsg ok"; msg.textContent="Check your email for the sign-in link."; }
-    };
-    btn.onclick=send;
-    emailEl.onkeydown=e=>{ if(e.key==="Enter") send(); };
-    el.querySelector("#loginskip").onclick=closeLogin;
-    setTimeout(()=>emailEl.focus(),40);
+    return;
   }
+
+  /* --- sign in / create account (email + password) --- */
+  const signup = loginMode==="signup";
+  el.innerHTML =
+    `<div class="authtabs">`
+    +  `<button class="authtab${signup?"":" on"}" data-m="signin" type="button">Sign in</button>`
+    +  `<button class="authtab${signup?" on":""}" data-m="signup" type="button">Create account</button>`
+    + `</div>`
+    + `<h2>${signup?"Create your account":"Welcome back"}</h2>`
+    + `<p>${signup?"Sign up to save the games you've watched and sync them across every device.":"Sign in to pick your tracker back up on any device."}</p>`
+    + `<div class="field">`
+    +   `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
+    +   `<input id="authpass" type="password" placeholder="Password" autocomplete="${signup?"new-password":"current-password"}">`
+    +   `<button class="cta" id="authgo" type="button">${signup?"Create account":"Sign in"}</button>`
+    + `</div>`
+    + `<div class="loginmsg" id="authmsg"></div>`
+    + (signup?``:`<button class="loginlink" id="forgot" type="button">Forgot password?</button>`)
+    + `<button class="loginskip" id="loginskip" type="button">Continue browsing without saving</button>`;
+
+  const emailEl=el.querySelector("#authemail"), passEl=el.querySelector("#authpass"),
+        msg=el.querySelector("#authmsg"), btn=el.querySelector("#authgo");
+
+  el.querySelectorAll(".authtab").forEach(t=>t.onclick=()=>{ loginMode=t.dataset.m; renderLogin(); });
+
+  const go=async ()=>{
+    const email=(emailEl.value||"").trim(), pass=(passEl.value||"");
+    if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email."; return; }
+    if(pass.length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
+    btn.disabled=true; msg.className="loginmsg"; msg.textContent=signup?"Creating account…":"Signing in…";
+    if(signup){
+      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      btn.disabled=false;
+      if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
+      if(!(data && data.session)){            // email confirmation is ON -> one-time verify email
+        msg.className="loginmsg ok"; msg.textContent="Account created — check your email to confirm, then sign in.";
+      }                                        // else: confirmation OFF -> SIGNED_IN closes the screen
+    }else{
+      const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+      btn.disabled=false;
+      if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
+      // success -> SIGNED_IN handler closes the screen and syncs
+    }
+  };
+  btn.onclick=go;
+  emailEl.onkeydown=e=>{ if(e.key==="Enter") passEl.focus(); };
+  passEl.onkeydown=e=>{ if(e.key==="Enter") go(); };
+
+  const forgot=el.querySelector("#forgot");
+  if(forgot) forgot.onclick=async ()=>{
+    const email=(emailEl.value||"").trim();
+    if(!email){ msg.className="loginmsg"; msg.textContent="Type your email above first, then tap Forgot password."; return; }
+    msg.className="loginmsg"; msg.textContent="Sending reset link…";
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.href.split("#")[0] });
+    msg.className = error ? "loginmsg" : "loginmsg ok";
+    msg.textContent = error ? friendlyAuthError(error) : "Check your email for a password-reset link.";
+  };
+
+  el.querySelector("#loginskip").onclick=closeLogin;
+  setTimeout(()=>emailEl.focus(),40);
 }
 function openLogin(){ if(!sb) return; renderLogin(); const m=document.getElementById("loginmask"); if(m) m.hidden=false; }
 function closeLogin(){ const m=document.getElementById("loginmask"); if(m) m.hidden=true; }
