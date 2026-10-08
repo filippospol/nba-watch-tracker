@@ -2102,19 +2102,40 @@ function restorePending(){
 }
 /* Last copy of the account seen on this device: lets the list show instantly and offline.
    It's only ever a starting point — the account itself is re-read and always wins. */
+/* `base` = the account exactly as this device last saw it, with its version stamp (updated_at).
+   Knowing the version lets the app ask "has anything changed?" (a reply of a few bytes) instead of
+   downloading the whole list, and save without downloading first — keeping Supabase data transfer tiny. */
+let base=null;                  // {w:Set, c:Set, prefs:obj|null, ver:string|null, exists:bool}
 const cacheKey=()=>currentUser?("nba_cache_"+currentUser.id):null;
-function saveCache(w,c){ const k=cacheKey(); if(k) try{ store.set(k,{w:[...w],c:[...c]}); }catch(e){} }
+function saveCache(){
+  const k=cacheKey(); if(!k || !base) return;
+  try{ store.set(k,{w:[...base.w],c:[...base.c],prefs:base.prefs,ver:base.ver,exists:base.exists}); }catch(e){}
+}
+function setBase(data){
+  const [w,c]=cloudSets(data);
+  base={ w, c, prefs:(data && data.prefs && typeof data.prefs==="object") ? data.prefs : null,
+         ver:(data && data.updated_at!=null) ? String(data.updated_at) : null, exists:!!data };
+  saveCache();
+}
+function sameVer(a,b){
+  if(a==null || b==null) return a==null && b==null;
+  const x=Date.parse(a), y=Date.parse(b);
+  return isFinite(x) && isFinite(y) ? x===y : String(a)===String(b);
+}
 function showCached(){
   const k=cacheKey(); if(!k) return;
   const v=store.get(k,null);
   const w=cleanIds(v&&v.w), c=cleanIds(v&&v.c);
   for(const id of [...c]) if(!w.has(id)) c.delete(id);
+  // Only a cache written by this version (with a version stamp) can stand in for the account.
+  if(v && typeof v.exists==="boolean" && (v.ver===null || typeof v.ver==="string"))
+    base={ w:new Set(w), c:new Set(c), prefs:(v.prefs && typeof v.prefs==="object")?v.prefs:null, ver:v.ver, exists:v.exists };
   applyOps(w,c,pending);
   state.watched=w; state.condensed=c;
 }
 function resetAccountState(){
   clearTimeout(writeTimer); clearTimeout(retryTimer);
-  pending=new Map(); pendingPrefs=false; cloudReady=false; syncState="idle"; retryDelay=2000;
+  pending=new Map(); pendingPrefs=false; cloudReady=false; syncState="idle"; retryDelay=2000; base=null;
   state.watched=new Set(); state.condensed=new Set();
 }
 function setSync(s){ if(syncState!==s){ syncState=s; setStatus(); } }
@@ -2185,17 +2206,30 @@ function scheduleRetry(){
 function failSync(){ setSync(navigator.onLine===false?"offline":"error"); scheduleRetry(); }
 
 /* Read the account and show it (plus this device's unsaved changes on top). */
+let netStats={probes:0, reads:0, writes:0};   // handy for checking usage in the browser console
 async function pullCloud(){
   if(!sb || !currentUser) return;
   const uid=currentUser.id; lastPull=Date.now();
-  let data;
-  try{ data=await readCloud(uid); }catch(e){ failSync(); return; }
-  if(!currentUser || currentUser.id!==uid) return;              // signed out / switched meanwhile
-  const [w,c]=cloudSets(data);
-  saveCache(w,c);
+  try{
+    let fresh=false;
+    if(casSupported && base){                   // 1) tiny request: just the version stamp
+      netStats.probes++;
+      const { data, error } = await sb.from("trackers").select("updated_at").eq("user_id", uid).maybeSingle();
+      if(error){ if(!dropOptionalColumn(error)) throw error; }
+      else fresh = base.exists ? !!(data && sameVer(data.updated_at, base.ver)) : !data;
+    }
+    if(!currentUser || currentUser.id!==uid) return;            // signed out / switched meanwhile
+    if(!fresh){                                  // 2) only if something changed: download the list
+      netStats.reads++;
+      const data=await readCloud(uid);
+      if(!currentUser || currentUser.id!==uid) return;
+      setBase(data);
+    }
+  }catch(e){ failSync(); return; }
+  const w=new Set(base.w), c=new Set(base.c);
   applyOps(w,c,pending);
   const before=collectPrefs();
-  const cp=(data && data.prefs && typeof data.prefs==="object") ? data.prefs : null;
+  const cp=base.prefs;
   if(cp && Object.keys(cp).length){ if(!pendingPrefs) applyPrefs(cp); }   // the account's settings win
   else if(prefsSupported && !cloudReady){ pendingPrefs=true; prefsVer++; } // account has none yet: save this device's
   const after=collectPrefs();
@@ -2224,30 +2258,43 @@ async function saveNow(){
   const ops=new Map(pending), prefsDirty=pendingPrefs, pv=prefsVer;   // what this attempt commits
   let ok=false;
   try{
+    let needRead=!base;
     for(let attempt=0; attempt<6 && !ok; attempt++){
-      const data=await readCloud(uid);                        // fresh copy every attempt
-      if(!currentUser || currentUser.id!==uid) return;
-      const [w,c]=cloudSets(data);
+      // Normally no download: write on top of the version we already have. The write only
+      // succeeds if nobody saved since (compare-and-swap); if they did, download once and retry.
+      if(needRead || !casSupported){
+        netStats.reads++;
+        const data=await readCloud(uid);
+        if(!currentUser || currentUser.id!==uid) return;
+        setBase(data);
+      }
+      needRead=true;                                          // unless told otherwise, re-read before a retry
+      const w=new Set(base.w), c=new Set(base.c);
       applyOps(w,c,ops);
-      const row={ watched:[...w], updated_at:new Date().toISOString() };
+      const row={ watched:[...w] };
+      if(casSupported) row.updated_at=new Date().toISOString();
       if(condensedSupported) row.condensed=[...c];
       if(prefsSupported && prefsDirty) row.prefs=collectPrefs();
-      let res;
-      if(!data){
-        res=await sb.from("trackers").insert({ user_id:uid, ...row }).select("user_id");
-        if(res.error){ if(res.error.code==="23505" || dropOptionalColumn(res.error)) continue; throw res.error; }
+      const back=casSupported?"updated_at":"user_id";         // the reply is just the new version stamp
+      let res; netStats.writes++;
+      if(!base.exists){
+        res=await sb.from("trackers").insert({ user_id:uid, ...row }).select(back);
+        if(res.error){ if(res.error.code==="23505") continue; if(dropOptionalColumn(res.error)){ needRead=false; continue; } throw res.error; }
       }else if(casSupported){
         let q=sb.from("trackers").update(row).eq("user_id",uid);
-        q = (data.updated_at==null) ? q.is("updated_at",null) : q.eq("updated_at",data.updated_at);
-        res=await q.select("user_id");
-        if(res.error){ if(dropOptionalColumn(res.error)) continue; throw res.error; }
+        q = (base.ver==null) ? q.is("updated_at",null) : q.eq("updated_at",base.ver);
+        res=await q.select(back);
+        if(res.error){ if(dropOptionalColumn(res.error)){ needRead=false; continue; } throw res.error; }
         if(!res.data || !res.data.length) continue;           // someone else saved in between -> re-read, merge again
       }else{
         res=await sb.from("trackers").upsert({ user_id:uid, ...row });
-        if(res.error){ if(dropOptionalColumn(res.error)) continue; throw res.error; }
+        if(res.error){ if(dropOptionalColumn(res.error)){ needRead=false; continue; } throw res.error; }
       }
+      if(!currentUser || currentUser.id!==uid) return;
       ok=true;
-      saveCache(w,c);
+      const got=res.data && res.data[0] && res.data[0].updated_at;
+      base={ w, c, prefs:row.prefs || base.prefs, ver:casSupported ? String(got || row.updated_at) : null, exists:true };
+      saveCache();
       // Committed: forget the changes we just saved (unless they were changed again meanwhile).
       for(const [id,t] of ops) if(pending.has(id) && pending.get(id)===t) pending.delete(id);
       if(prefsDirty && prefsVer===pv) pendingPrefs=false;
@@ -2289,7 +2336,14 @@ window.addEventListener("pageshow", e=>{ if(e.persisted) pullSoon(); });        
 window.addEventListener("online", ()=>{ retryDelay=2000; if(!currentUser) return; if(cloudReady && (pending.size||pendingPrefs)) saveNow(); else pullCloud(); });
 window.addEventListener("offline",()=>{ if(currentUser) setSync("offline"); });
 window.addEventListener("storage", e=>{ if(currentUser && e.key===pendKey()) pullSoon(); });   // another tab in this browser
-setInterval(()=>{ if(document.visibilityState==="visible") pullSoon(); }, 90000);
+/* Background checks only while someone is actually using the app: a tab left open all day
+   stops checking after 10 idle minutes, and catches up on the next tap, key press or scroll. */
+let lastActive=Date.now();
+const IDLE_MS=10*60000;
+["pointerdown","keydown","wheel","touchstart"].forEach(ev=>window.addEventListener(ev,()=>{
+  const wasIdle=Date.now()-lastActive>IDLE_MS; lastActive=Date.now(); if(wasIdle) pullSoon();
+},{passive:true}));
+setInterval(()=>{ if(document.visibilityState==="visible" && Date.now()-lastActive<IDLE_MS) pullSoon(); }, 90000);
 
 /* ---------- account button + dedicated login screen (email + password) ---------- */
 function updateAccountBtn(){
