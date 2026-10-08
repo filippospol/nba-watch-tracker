@@ -107,6 +107,20 @@
   .game.watched{background:var(--accent-weak); box-shadow:inset 3px 0 0 var(--accent)}
   .game.watched .box{background:var(--accent); border-color:var(--accent)}
   .game.watched .box::after{content:""; position:absolute; left:6px; top:2.5px; width:5px; height:9px; border:solid #fff; border-width:0 2.2px 2.2px 0; transform:rotate(45deg)}
+  /* tick + optional "C" (condensed) badge; fixed-width column keeps ticks aligned */
+  .game{position:relative}
+  .mark{display:inline-flex; align-items:center; justify-content:flex-end; gap:6px; justify-self:end}
+  .ctag{display:none; font-size:10px; font-weight:700; line-height:1; color:var(--accent); border:1.4px solid var(--accent); padding:2px 3px 1px; letter-spacing:.02em}
+  .game.condensed .ctag, .ctag.show{display:inline-block}
+  /* Full / Condensed chooser that opens on the tapped row */
+  .game.choosing{background:var(--hover)}
+  .wchoice{position:absolute; right:0; top:50%; transform:translateY(-50%); z-index:5; display:flex; gap:4px; padding:4px;
+    background:var(--bg); border:1px solid var(--rule-strong); box-shadow:0 6px 18px rgba(0,0,0,.18)}
+  .wchoice button{font-size:12.5px; padding:6px 12px; border:1px solid var(--rule); background:var(--bg); color:var(--fg)}
+  .wchoice button:hover{border-color:var(--fg)}
+  .wchoice button.on{background:var(--accent); border-color:var(--accent); color:#fff}
+  .wchoice .rm{color:var(--muted); padding:6px 10px}
+  .split{font-style:normal; font-size:12px; color:var(--muted); margin-left:4px}
   .game.watched .time{color:var(--faint)}
   .empty{color:var(--muted); padding:24px 0; font-size:13px}
 
@@ -148,7 +162,7 @@
 
   .lg{width:20px; height:20px; flex:none; display:inline-block; vertical-align:middle; object-fit:contain}
   .lg.ab{display:inline-flex; align-items:center; justify-content:center; font-size:8px; font-weight:600; letter-spacing:.02em; background:var(--chip); color:var(--muted)}
-  .game{grid-template-columns:52px minmax(0,1fr) auto 24px}
+  .game{grid-template-columns:52px minmax(0,1fr) auto 48px}
   .game .match{display:flex; align-items:center; flex-wrap:wrap; gap:4px 6px; min-width:0}
   .game .tm{display:inline-flex; align-items:center; gap:6px; white-space:nowrap}
   .game .match .at{padding:0 1px}
@@ -232,7 +246,7 @@
   @media (prefers-reduced-motion: no-preference){ .toast{animation:tin .25s ease-out} @keyframes tin{from{opacity:0; transform:translate(-50%,8px)}} }
   button:focus-visible,.game:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
   @media (max-width:480px){
-    .game{grid-template-columns:44px minmax(0,1fr) auto 24px; gap:8px}
+    .game{grid-template-columns:44px minmax(0,1fr) auto 46px; gap:8px}
     .game .match{flex-direction:column; align-items:flex-start; gap:3px}
     .game .match .at{display:none}
   }
@@ -1793,6 +1807,7 @@ const state={
   scores:new Map(),              // "away|home" -> [{ms, as, hs, final}]
   scoresAt:0,
   watched:new Set(),             // session-only until signed in; the account (cloud) is the store of record
+  condensed:new Set(),           // subset of watched: games seen as a condensed replay (counted exactly like full games)
   region:store.get("nba_region","Europe/Athens"),
   hideScores:store.get("nba_hide_scores",true),   // spoiler shield on by default
   revealed:new Set(),
@@ -1980,6 +1995,7 @@ const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : 
 let currentUser=null, firstPull=true, writeTimer=null, cloudBusy=false, loginMode="signin";
 let cloudReady=false;        // no writes until the account's saved state has been read (avoids overwriting it)
 let prefsSupported=true;     // false if the `prefs` column hasn't been added yet -> sync watched games only
+let condensedSupported=true; // false if the `condensed` column hasn't been added yet
 function sameSet(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
 
 /* ---------- username + synced settings ---------- */
@@ -2024,30 +2040,41 @@ async function initStore(){
   updateAccountBtn(); setStatus();
 }
 
+/* If an optional column (prefs / condensed) is missing, stop using just that one and retry. */
+function dropOptionalColumn(err){
+  const m=((err&&err.message)||"").toLowerCase();
+  if(condensedSupported && m.includes("condensed")){ condensedSupported=false; return true; }
+  if(prefsSupported && m.includes("prefs")){ prefsSupported=false; return true; }
+  if(condensedSupported){ condensedSupported=false; return true; }   // unknown error: shed optional columns one at a time
+  if(prefsSupported){ prefsSupported=false; return true; }
+  return false;
+}
 async function pullCloud(){
   if(!sb || !currentUser) return;
-  let { data, error } = await sb.from("trackers")
-    .select(prefsSupported ? "watched, prefs" : "watched").eq("user_id", currentUser.id).maybeSingle();
-  if(error && prefsSupported){
-    // most likely the `prefs` column hasn't been added yet -> keep syncing watched games only
-    prefsSupported=false;
-    ({ data, error } = await sb.from("trackers").select("watched").eq("user_id", currentUser.id).maybeSingle());
+  let data=null, error=null;
+  for(let attempt=0; attempt<3; attempt++){
+    const cols=["watched"].concat(prefsSupported?["prefs"]:[], condensedSupported?["condensed"]:[]).join(", ");
+    ({ data, error } = await sb.from("trackers").select(cols).eq("user_id", currentUser.id).maybeSingle());
+    if(!error || !dropOptionalColumn(error)) break;
   }
   if(error){ state.sync="local"; setStatus(); return; }
   const cloud = new Set(Array.isArray(data && data.watched) ? data.watched.map(String) : []);
+  const cloudCond = new Set(Array.isArray(data && data.condensed) ? data.condensed.map(String) : []);
   const cloudPrefs = (data && data.prefs && typeof data.prefs==="object") ? data.prefs : null;
   let needSave=false;
   if(firstPull){
     firstPull=false;
     // First sign-in on this device: fold anything ticked in this session into the account.
     const union = new Set([...cloud, ...state.watched]);
-    state.watched = union;
-    if(!sameSet(union, cloud)) needSave=true;
+    const cond = new Set([...cloudCond, ...state.condensed].filter(id=>union.has(id)));
+    if(!sameSet(union, cloud) || (condensedSupported && !sameSet(cond, cloudCond))) needSave=true;
+    state.watched = union; state.condensed = cond;
     // Settings follow the account; if the account has none yet, save this device's.
     if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
     else if(prefsSupported) needSave=true;
   }else{
     state.watched = cloud;
+    state.condensed = new Set([...cloudCond].filter(id=>cloud.has(id)));
     if(cloudPrefs && Object.keys(cloudPrefs).length) applyPrefs(cloudPrefs);
   }
   cloudReady=true;
@@ -2061,11 +2088,14 @@ function queueSave(){
   writeTimer=setTimeout(async ()=>{
     if(cloudBusy){ queueSave(); return; }       // a write is in flight; try again shortly
     cloudBusy=true;
-    const row={ user_id: currentUser.id, watched:[...state.watched], updated_at:new Date().toISOString() };
-    if(prefsSupported) row.prefs=collectPrefs();
     try{
-      const { error } = await sb.from("trackers").upsert(row);
-      if(error && row.prefs){ prefsSupported=false; delete row.prefs; await sb.from("trackers").upsert(row); }
+      for(let attempt=0; attempt<3; attempt++){
+        const row={ user_id: currentUser.id, watched:[...state.watched], updated_at:new Date().toISOString() };
+        if(prefsSupported) row.prefs=collectPrefs();
+        if(condensedSupported) row.condensed=[...state.condensed].filter(id=>state.watched.has(id));
+        const { error } = await sb.from("trackers").upsert(row);
+        if(!error || !dropOptionalColumn(error)) break;
+      }
     }catch(e){ /* keep the local copy; next change retries */ }
     cloudBusy=false;
   },500);
@@ -2275,26 +2305,66 @@ function groupByDay(games){
   for(const g of games){ const k=dateKey(g.ms,state.region); (m.get(k)||m.set(k,[]).get(k)).push(g); }
   return m;
 }
-function toggle(id){
+/* ---------- marking a game: Full / Condensed ----------
+   Watched = state.watched (what every stat counts). Condensed = a subset flag on top.  */
+function rowEl(id){ const sel=(window.CSS&&CSS.escape)?CSS.escape(id):id; return document.querySelector(`#view .game[data-id="${sel}"]`); }
+function markTitle(on,c){ return c?"Watched · condensed":on?"Watched · full game":"Mark as watched"; }
+function paintRow(el,id){
+  const on=state.watched.has(id), c=on&&state.condensed.has(id);
+  el.classList.toggle("watched",on); el.classList.toggle("condensed",c);
+  el.setAttribute("aria-checked",on?"true":"false");
+  const m=el.querySelector(".mark"); if(m) m.title=markTitle(on,c);
+}
+function setWatched(id,type){                     // type: "full" | "condensed" | null (remove)
   const before=badgeState();
-  const adding=!state.watched.has(id);
-  if(adding) state.watched.add(id); else state.watched.delete(id);
-  queueSave();                                  // writes to the account only when signed in
-  if(adding && !currentUser) nudgeSignIn();     // logged out -> this mark won't be saved
+  const was=state.watched.has(id);
+  if(type){ state.watched.add(id); if(type==="condensed") state.condensed.add(id); else state.condensed.delete(id); }
+  else{ state.watched.delete(id); state.condensed.delete(id); }
+  queueSave();                                    // writes to the account only when signed in
+  if(type && !was && !currentUser) nudgeSignIn(); // logged out -> this mark won't be saved
   const after=badgeState();
   const fresh=BADGES.filter(b=>after[b.id].done&&!before[b.id].done);
   if(fresh.length) toast(`Badge unlocked: ${fresh[fresh.length-1].name}`);
   // In a list with no watched/unwatched filter, update the one row in place so the
   // scroll position and lazily-loaded content are kept. Otherwise re-render.
   if((state.view==="list"||state.view==="preseason") && state.wfilter==="all"){
-    const sel=(window.CSS&&CSS.escape)?CSS.escape(id):id;
-    const el=document.querySelector(`#view .game[data-id="${sel}"]`);
-    if(el){ el.classList.toggle("watched",adding); el.setAttribute("aria-checked",adding?"true":"false"); }
+    const el=rowEl(id); if(el) paintRow(el,id);
     updateTeamHeaderCounts();
   }else{
     render();
   }
 }
+function closeChooser(focusRow){
+  const open=document.querySelector(".game.choosing");
+  if(!open) return;
+  open.classList.remove("choosing");
+  const w=open.querySelector(".wchoice"); if(w) w.remove();
+  if(focusRow) open.focus();
+}
+function openChooser(el,fromKey){
+  const id=el.dataset.id;
+  if(el.classList.contains("choosing")){ closeChooser(fromKey); return; }
+  closeChooser();
+  const on=state.watched.has(id), c=on&&state.condensed.has(id);
+  const w=document.createElement("span");
+  w.className="wchoice"; w.setAttribute("role","group"); w.setAttribute("aria-label","Mark this game as watched");
+  w.innerHTML=`<button type="button" data-w="full" class="${on&&!c?"on":""}" aria-pressed="${on&&!c}">Full</button>`
+    +`<button type="button" data-w="condensed" class="${c?"on":""}" aria-pressed="${c}">Condensed</button>`
+    +(on?`<button type="button" data-w="remove" class="rm" aria-label="Remove from watched" title="Remove">&times;</button>`:"");
+  w.onclick=e=>{
+    e.stopPropagation();
+    const b=e.target.closest("button[data-w]"); if(!b) return;
+    const k=b.dataset.w;
+    closeChooser();
+    setWatched(id, k==="remove"?null:k);
+    if(fromKey){ const r=rowEl(id); if(r) r.focus(); }
+  };
+  w.onkeydown=e=>{ if(e.key==="Escape"){ e.stopPropagation(); closeChooser(true); } else e.stopPropagation(); };
+  el.appendChild(w); el.classList.add("choosing");
+  if(fromKey){ const first=w.querySelector("button"); if(first) first.focus(); }
+}
+document.addEventListener("click",e=>{ if(!e.target.closest(".game.choosing")) closeChooser(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeChooser(true); });
 
 /* ---------- rows ---------- */
 function scoreCell(g,ph){
@@ -2308,14 +2378,14 @@ function scoreCell(g,ph){
 }
 function gameRow(g,now){
   now=(now>1e12)?now:Date.now();     // also called via Array.map, where the 2nd arg is an index
-  const on=state.watched.has(g.id);
+  const on=state.watched.has(g.id), c=on&&state.condensed.has(g.id);
   const ph=phase(g,now);
   const st=ph==="final"?`<span class="st">Final</span>`:ph==="live"?`<span class="st live">Live</span>`:"";
-  return `<div class="game${on?" watched":""}${ph==="final"?" done":""}" data-id="${g.id}" tabindex="0" role="checkbox" aria-checked="${on}">
+  return `<div class="game${on?" watched":""}${c?" condensed":""}${ph==="final"?" done":""}" data-id="${g.id}" tabindex="0" role="checkbox" aria-checked="${on}">
     <span class="time">${timeLabel(g.ms,state.region)}${st}</span>
     <span class="match"><span class="tm">${logo(g.away)}${short(g.away)}</span><span class="at">@</span><span class="tm home">${logo(g.home)}${short(g.home)}</span></span>
     ${scoreCell(g,ph)}
-    <span class="box" aria-hidden="true"></span>
+    <span class="mark" title="${markTitle(on,c)}"><span class="ctag" aria-hidden="true">C</span><span class="box" aria-hidden="true"></span></span>
   </div>`;
 }
 const NOWLINE=`<div class="nowline" role="separator">Now</div>`;
@@ -2621,8 +2691,9 @@ function renderStats(){
       </div>${open?teamDetailHtml(t):""}`;
     }).join("");
     const seg=[["all","All"],["east","East"],["west","West"]].map(([k,l])=>`<button data-c="${k}" class="${state.conf===k?"on":""}">${l}</button>`).join("");
+    const cond=regularGames().filter(g=>state.watched.has(g.id)&&state.condensed.has(g.id)).length;
     html=`<div class="sumline">
-        <span><b>${s.total}</b>games watched</span>
+        <span><b>${s.total}</b>games watched${cond?`<em class="split">(${s.total-cond} full &middot; ${cond} condensed)</em>`:""}</span>
         <span><b>${pct}%</b>of the season</span>
         <span><b>${s.seen}<span style="font-size:13px;color:var(--muted);font-weight:400">/30</span></b>teams seen</span>
       </div>
@@ -2658,9 +2729,10 @@ function teamDetailHtml(T){
   const gs=regularGames().filter(g=>(g.away===T||g.home===T)&&state.watched.has(g.id)).sort((a,b)=>a.ms-b.ms);
   const fmt=new Intl.DateTimeFormat("en-GB",{timeZone:state.region,weekday:"short",day:"numeric",month:"short"});
   const items=gs.map(g=>{ const home=g.home===T, opp=home?g.away:g.home;
-    return `<li><span class="cdd">${fmt.format(new Date(g.ms))}</span><span class="cdm">${home?"vs":"@"} ${logo(opp)}${short(opp)}</span></li>`; }).join("");
+    const c=state.condensed.has(g.id)?`<span class="ctag show" title="Condensed">C</span>`:"";
+    return `<li><span class="cdd">${fmt.format(new Date(g.ms))}</span><span class="cdm">${home?"vs":"@"} ${logo(opp)}${short(opp)}${c}</span></li>`; }).join("");
   return `<div class="cdetail">
-      <div class="cdh"><span>${gs.length} watched &middot; scores hidden</span><button class="link" type="button" data-goteam="${T}">Full ${short(T)} schedule &rarr;</button></div>
+      <div class="cdh"><span>${gs.length} watched${(()=>{const n=gs.filter(g=>state.condensed.has(g.id)).length; return n?` (${n} condensed)`:"";})()} &middot; scores hidden</span><button class="link" type="button" data-goteam="${T}">Full ${short(T)} schedule &rarr;</button></div>
       <ul class="cdl">${items}</ul>
     </div>`;
 }
@@ -2792,9 +2864,9 @@ function wireGames(root){
         if(g&&cell){ const tmp=document.createElement("div"); tmp.innerHTML=scoreCell(g,phase(g,Date.now())); const nn=tmp.firstElementChild; if(nn) cell.replaceWith(nn); }
         return;
       }
-      toggle(el.dataset.id);
+      openChooser(el,false);
     };
-    el.onkeydown=e=>{ if(e.key===" "||e.key==="Enter"){ e.preventDefault(); toggle(el.dataset.id); } };
+    el.onkeydown=e=>{ if(e.target===el && (e.key===" "||e.key==="Enter")){ e.preventDefault(); openChooser(el,true); } };
   });
 }
 
