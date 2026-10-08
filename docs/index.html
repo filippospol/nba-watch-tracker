@@ -1,5 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="icon" type="image/png" id="favicon" href="icon.png"><link rel="apple-touch-icon" href="icon.png"><meta name="theme-color" content="#121212"></head><body>
-<title>NBA Watch Tracker</title>
+<!doctype html><html lang="en"><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="icon" type="image/png" id="favicon" href="icon.png"><link rel="apple-touch-icon" href="icon.png"><meta name="theme-color" content="#121212"><title>NBA Watch Tracker</title><meta name="description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><link rel="canonical" href="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:type" content="website"><meta property="og:site_name" content="NBA Watch Tracker"><meta property="og:title" content="NBA Watch Tracker"><meta property="og:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta property="og:url" content="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"><meta property="og:image:width" content="512"><meta property="og:image:height" content="512"><meta property="og:image:alt" content="NBA Watch Tracker logo"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="NBA Watch Tracker"><meta name="twitter:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta name="twitter:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"></head><body>
 <style>
   :root{
     box-sizing:border-box;
@@ -257,11 +256,28 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   /* frozen header: stays pinned through the sign-in bar while the page scrolls */
-  .topbar{position:sticky; top:0; z-index:20; background:var(--bg); padding-top:10px; box-shadow:0 10px 18px -14px rgba(0,0,0,.4)}
+  .topbar{position:sticky; top:0; z-index:20; background:var(--bg); padding:10px 0 10px; transition:box-shadow .2s ease}
+  .topbar.raised{box-shadow:0 10px 18px -14px rgba(0,0,0,.4)}
+  /* compact bar once you scroll: one slim row (logo, title, theme, time zone, account) */
+  .topbar.compact{padding:7px 0}
+  .topbar.compact .kicker, .topbar.compact .tagline{display:none}
+  .topbar.compact .mast{flex-wrap:nowrap; align-items:center}
+  .topbar.compact .brand{gap:9px; min-width:0}
+  .topbar.compact .brand > div{min-width:0}
+  .topbar.compact .brand .logo{width:28px; height:28px}
+  .topbar.compact h1{font-size:16px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .topbar.compact .topright{align-items:center; flex:none}
+  .topspacer{height:0}
+  @media (max-width:480px){
+    .topbar.compact .tz > span:first-child, .topbar.compact #tzname{display:none}   /* keep just "GMT+3 ▾" */
+    .topbar.compact .topright{gap:8px}
+    .topbar.compact h1{font-size:15px}
+    .topbar.compact .acctbtn{max-width:104px}
+  }
   .brand{display:flex; align-items:center; gap:12px}
   /* transparent all-red mark: one image, visible on both themes (no swap needed) */
   .brand .logo{width:42px; height:42px; flex:none; object-fit:contain; display:block}
-  .tagline{margin:3px 0 0; font-size:12px; color:var(--muted); line-height:1.3; max-width:46ch}
+  .tagline{margin:3px 0 0; font-size:12px; color:var(--muted); line-height:1.3; max-width:62ch}
   /* team focus header */
   .teamhdr{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 14px; margin:16px 0 2px; padding:0 0 14px; border-bottom:1px solid var(--rule-strong)}
   .teamhdr .tlogo{display:flex}
@@ -1964,13 +1980,14 @@ function ago(ts){
   const h=Math.floor(m/60); if(h<24) return h+" h ago";
   return Math.floor(h/24)+" d ago";
 }
+const fmtN=n=>Number(n).toLocaleString("en-US");   // "1,200" in every browser language
 function setStatus(){
   const s=document.getElementById("status");
   const gg=regularGames();
   const n=gg.length;
   if(n){ const y=new Date(gg[0].ms).getUTCFullYear(); document.getElementById("kicker").textContent=`NBA · ${y}–${String(y+1).slice(2)}`; }
   const last=n?new Intl.DateTimeFormat("en-GB",{timeZone:state.region,day:"numeric",month:"short"}).format(new Date(gg[n-1].ms)):"";
-  const parts=[`${n.toLocaleString()} games through ${last}`];
+  const parts=[`${fmtN(n)} games through ${last}`];
   parts.push(state.scoresAt?`scores updated ${ago(state.scoresAt)}`:"scores appear after each game night");
   parts.push(syncLabel());
   s.textContent=parts.join(" · ");
@@ -2793,7 +2810,7 @@ function renderList(){
       // whole season, lazy-loaded; day strip replaced by a Jump-to-today control
       const allTotal=allDayKeys.reduce((n,k)=>n+groups.get(k).length,0);
       top = `<div class="months">${months}</div>`
-          + `<div class="allbar"><button class="link" id="f-today" type="button">Jump to today &darr;</button><span class="allcount">${allTotal.toLocaleString()} games &middot; whole season</span></div>`
+          + `<div class="allbar"><button class="link" id="f-today" type="button">Jump to today &darr;</button><span class="allcount">${fmtN(allTotal)} games &middot; whole season</span></div>`
           + filters;
       listKeys = allDayKeys;
     }else{
@@ -2823,6 +2840,38 @@ function renderList(){
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
   if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
+  restoreStrips(v);
+}
+
+/* Keep the selected month and the selected day (or today) in view inside the sideways-scrolling strips.
+   First time a month is shown it scrolls there; later re-renders keep wherever you scrolled the strip to. */
+let _strip={key:null, months:0, days:0};
+function centerIn(strip,el){
+  if(!strip||!el) return;
+  const sr=strip.getBoundingClientRect(), er=el.getBoundingClientRect();
+  strip.scrollLeft=Math.max(0, strip.scrollLeft+(er.left-sr.left)-(sr.width-er.width)/2);
+}
+function restoreStrips(v){
+  const ms=v.querySelector(".months"), ds=v.querySelector(".days");
+  const key=state.view+"|"+state.month+"|"+(state.day||"");
+  if(key===_strip.key){
+    if(ms) ms.scrollLeft=_strip.months;
+    if(ds) ds.scrollLeft=_strip.days;
+  }else{
+    _strip.key=key;
+    if(ms) centerIn(ms, ms.querySelector("button.on"));
+    if(ds){
+      const todayK=dateKey(Date.now(),state.region);
+      const target=ds.querySelector("button.on[data-d]:not([data-d=''])")
+        || ds.querySelector("button.today")
+        || [...ds.querySelectorAll("button[data-d]")].find(b=>b.dataset.d && b.dataset.d>=todayK);
+      if(target) centerIn(ds,target);
+    }
+  }
+  const save=()=>{ _strip.months=ms?ms.scrollLeft:0; _strip.days=ds?ds.scrollLeft:0; };
+  save();
+  if(ms) ms.addEventListener("scroll",save,{passive:true});
+  if(ds) ds.addEventListener("scroll",save,{passive:true});
 }
 
 function renderCalendar(){
@@ -3152,10 +3201,14 @@ function setView(v){
 }
 document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 /* Preseason tab appears only while preseason is live; it hides once the regular season opens. */
+function preseasonLive(){
+  if(_regStartMs===null) _regStartMs=etWallToUTCms("2026-10-20 00:00");
+  return state.games.some(isPreseason) && Date.now() < _regStartMs;
+}
 function updatePreseasonTab(){
   const btn=document.getElementById("tab-preseason");
   if(!btn) return;
-  const show = state.games.some(isPreseason) && Date.now() < (_regStartMs||0);
+  const show = preseasonLive();
   btn.hidden = !show;
   if(!show && state.view==="preseason") setView("list");
 }
@@ -3200,12 +3253,38 @@ function initToTop(){
   onScroll();
 }
 
+/* Frozen header: full size at the top of the page, a slim single row once you scroll.
+   A spacer takes up the height it gives back, so the page never jumps while it changes. */
+function initHeader(){
+  const bar=document.querySelector(".topbar");
+  if(!bar) return;
+  const spacer=document.createElement("div"); spacer.className="topspacer"; bar.after(spacer);
+  let compact=false, fullH=bar.offsetHeight;
+  const update=()=>{
+    const y=window.scrollY;
+    bar.classList.toggle("raised", y>4);
+    if(!compact){
+      fullH=bar.offsetHeight;
+      if(y > fullH+60){
+        bar.classList.add("compact"); compact=true;
+        spacer.style.height=Math.max(0, fullH-bar.offsetHeight)+"px";
+      }
+    }else if(y < fullH+10){
+      bar.classList.remove("compact"); compact=false; spacer.style.height="0px";
+    }
+  };
+  window.addEventListener("scroll",update,{passive:true});
+  window.addEventListener("resize",()=>{ if(compact){ bar.classList.remove("compact"); compact=false; spacer.style.height="0px"; } update(); });
+  update();
+}
+
 function init(){
   initTheme();
   initToTop();
+  initHeader();
   buildRegion();
   state.seed=loadSeed(); rebuildGames();
-  setView("list"); setStatus();
+  setView(preseasonLive() ? "preseason" : "list"); setStatus();
   updatePreseasonTab();
   loadLiveSchedule();            // replace the embedded snapshot with the live schedule.json
   loadLogos();
