@@ -168,6 +168,10 @@
   .game .match .at{padding:0 1px}
   .game .time .st{display:block; font-size:10px; letter-spacing:.08em; text-transform:uppercase}
   .game .time .st.live{color:var(--accent); font-weight:600}
+  /* calendar day list: your local date under each tip-off time (it can be the day after the US date) */
+  .game .time .ld{display:block; font-size:10.5px; color:var(--muted); white-space:nowrap; margin-top:1px}
+  .game .time .ld.next{color:var(--fg)}
+  .daypanel .game{grid-template-columns:74px minmax(0,1fr) auto 48px}
   .game.done .time{color:var(--faint)}
   .score{font-size:13px; white-space:nowrap; text-align:right; min-width:58px}
   .score b{font-weight:600; color:var(--win)}
@@ -249,6 +253,7 @@
     .game{grid-template-columns:44px minmax(0,1fr) auto 46px; gap:8px}
     .game .match{flex-direction:column; align-items:flex-start; gap:3px}
     .game .match .at{display:none}
+    .daypanel .game{grid-template-columns:64px minmax(0,1fr) auto 46px}
   }
 
 </style>
@@ -2685,13 +2690,16 @@ function scoreCell(g,ph){
   const aw=s.as>s.hs, hw=s.hs>s.as;
   return `<span class="score">${aw?`<b>${s.as}</b>`:`<span class="l">${s.as}</span>`}<span class="dash">–</span>${hw?`<b>${s.hs}</b>`:`<span class="l">${s.hs}</span>`}</span>`;
 }
-function gameRow(g,now){
+const ldFmt={};
+function localDateLabel(ms,tz){ (ldFmt[tz]??=new Intl.DateTimeFormat("en-GB",{timeZone:tz,weekday:"short",day:"numeric",month:"short"})); return ldFmt[tz].format(new Date(ms)).replace(",",""); }
+function gameRow(g,now,opts){
   now=(now>1e12)?now:Date.now();     // also called via Array.map, where the 2nd arg is an index
+  opts=(opts&&typeof opts==="object")?opts:{};
   const on=state.watched.has(g.id), c=on&&state.condensed.has(g.id);
   const ph=phase(g,now);
   const st=ph==="final"?`<span class="st">Final</span>`:ph==="live"?`<span class="st live">Live</span>`:"";
   return `<div class="game${on?" watched":""}${c?" condensed":""}${ph==="final"?" done":""}" data-id="${g.id}" tabindex="0" role="checkbox" aria-checked="${on}">
-    <span class="time">${timeLabel(g.ms,state.region)}${st}</span>
+    <span class="time">${timeLabel(g.ms,state.region)}${opts.usDay?`<span class="ld${dateKey(g.ms,state.region)!==opts.usDay?" next":""}">${localDateLabel(g.ms,state.region)}</span>`:""}${st}</span>
     <span class="match"><span class="tm">${logo(g.away)}${short(g.away)}</span><span class="at">@</span><span class="tm home">${logo(g.home)}${short(g.home)}</span></span>
     ${scoreCell(g,ph)}
     <span class="mark" title="${markTitle(on,c)}"><span class="ctag" aria-hidden="true">C</span><span class="box" aria-hidden="true"></span></span>
@@ -2967,7 +2975,7 @@ function renderCalendar(){
     const gs=groups.get(state.selDay)||[];
     const panel=v.querySelector("#daypanel");
     panel.innerHTML=`<div class="dayhead"><span>${usDayLabel(state.selDay)} <span class="cnt">(US)</span></span><span class="cnt">${dayCount(gs.length)}</span></div>`
-      + (gs.length?gs.map(gameRow).join(""):`<div class="empty">No games.</div>`);
+      + (gs.length?gs.map(g=>gameRow(g,Date.now(),{usDay:state.selDay})).join(""):`<div class="empty">No games.</div>`);
     wireGames(panel);
   }
 }
