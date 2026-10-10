@@ -125,6 +125,7 @@
 
   /* calendar */
   .calnav{display:flex; align-items:baseline; gap:12px; margin:14px 0 8px}
+  .calnote{font-size:11.5px; color:var(--muted); margin:-2px 0 10px}
   .calnav .mlabel{font-weight:600; font-size:15px; min-width:150px}
   .calnav button{padding:2px 8px}
   .grid{display:grid; grid-template-columns:repeat(7,1fr); border-top:1px solid var(--rule-strong); border-left:1px solid var(--rule)}
@@ -2374,12 +2375,34 @@ function updateAccountBtn(){
 function friendlyAuthError(error){
   const m=((error&&error.message)||"").toLowerCase();
   if(m.includes("invalid login")) return "That email or password doesn't match.";
+  if(m.includes("rate limit")||m.includes("too many")) return "Too many attempts — wait a few minutes and try again.";
   if(m.includes("already registered")||m.includes("already been registered")||m.includes("user already")) return "That email already has an account — switch to Sign in.";
   if(m.includes("password")&&m.includes("6")) return "Password must be at least 6 characters.";
   if(m.includes("valid email")||(m.includes("email")&&m.includes("invalid"))) return "Enter a valid email address.";
   if(m.includes("not confirmed")) return "Confirm your email first — check your inbox.";
-  if(m.includes("invalid username")||/database error (saving new|updating) user/.test(m)) return "That username isn't allowed. Use "+USERNAME_HINT;
+  if(m.includes("invalid username")||/database error (saving new|updating) user/.test(m)) return "That username is taken or not allowed. Use "+USERNAME_HINT;
   return (error&&error.message) || "Something went wrong — try again.";
+}
+/* Username helpers — server functions from supabase/usernames.sql. If they aren't installed yet,
+   the app quietly falls back to email-only sign-in (the database still enforces the rules). */
+function rpcMissing(e){
+  const c=String((e&&e.code)||""), m=((e&&e.message)||"").toLowerCase();
+  return c==="PGRST202" || c==="42883" || m.includes("could not find the function");
+}
+async function usernameAvailable(name){          // true / false, or null if it couldn't be checked
+  try{ const { data, error } = await sb.rpc("username_available",{ u:name }); return error ? null : data===true; }
+  catch(e){ return null; }
+}
+async function emailForUsername(name,pass){      // the account's email, only if the password is right
+  let res;
+  try{ res=await sb.rpc("email_for_login",{ u:name, p:pass }); }catch(e){ return { err:"Couldn't reach the server — check your connection." }; }
+  const { data, error } = res;
+  if(error){
+    if(rpcMissing(error)) return { err:"Signing in with a username isn't switched on yet — use your email." };
+    if(((error.message)||"").toLowerCase().includes("too many attempts")) return { err:"Too many tries for that username. Wait 15 minutes, or sign in with your email." };
+    return { err:friendlyAuthError(error) };
+  }
+  return data ? { email:String(data) } : { err:"That username or password doesn't match." };
 }
 function renderLogin(){
   const el=document.getElementById("logincontent");
@@ -2430,6 +2453,7 @@ function renderLogin(){
       if(!USERNAME_RE.test(name)){ msg.className="loginmsg"; msg.textContent=USERNAME_HINT; return; }
       if(name===u){ msg.className="loginmsg"; msg.textContent="That's already your username."; return; }
       sv.disabled=true; msg.className="loginmsg"; msg.textContent="Saving…";
+      if(await usernameAvailable(name)===false){ sv.disabled=false; msg.textContent="That username is taken — try another."; return; }
       const { data, error } = await sb.auth.updateUser({ data:{ username:name } });
       sv.disabled=false;
       if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
@@ -2461,7 +2485,9 @@ function renderLogin(){
     + `<p>${signup?"Sign up to save the games you've watched and sync them across every device.":"Sign in to pick your tracker back up on any device."}</p>`
     + `<div class="field">`
     +   (signup?`<input id="authuser" type="text" placeholder="Username (shown on your shared season)" autocomplete="username" maxlength="20" spellcheck="false" autocapitalize="off">`:``)
-    +   `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
+    +   (signup
+          ? `<input id="authemail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">`
+          : `<input id="authemail" type="text" placeholder="Email or username" autocomplete="username" spellcheck="false" autocapitalize="off" autocorrect="off">`)
     +   `<input id="authpass" type="password" placeholder="Password" autocomplete="${signup?"new-password":"current-password"}">`
     +   `<button class="cta" id="authgo" type="button">${signup?"Create account":"Sign in"}</button>`
     + `</div>`
@@ -2477,12 +2503,16 @@ function renderLogin(){
   const userEl=el.querySelector("#authuser");
   wireUsernameInput(userEl,msg);
   const go=async ()=>{
-    const email=(emailEl.value||"").trim(), pass=(passEl.value||""), uname=userEl?(userEl.value||"").trim():"";
+    let email=(emailEl.value||"").trim();
+    const pass=(passEl.value||""), uname=userEl?(userEl.value||"").trim():"";
     if(signup && !USERNAME_RE.test(uname)){ msg.className="loginmsg"; msg.textContent="Pick a username: "+USERNAME_HINT; return; }
-    if(!email){ msg.className="loginmsg"; msg.textContent="Enter your email."; return; }
+    if(!email){ msg.className="loginmsg"; msg.textContent=signup?"Enter your email.":"Enter your email or username."; return; }
+    const byUsername = !signup && (!email.includes("@") || /^@[A-Za-z0-9_.]{3,20}$/.test(email));   // "@name" works too
+    if(byUsername && !USERNAME_RE.test(email.replace(/^@/,""))){ msg.className="loginmsg"; msg.textContent="Enter your email, or a username like filippos_23."; return; }
     if(pass.length<6){ msg.className="loginmsg"; msg.textContent="Password must be at least 6 characters."; return; }
     btn.disabled=true; msg.className="loginmsg"; msg.textContent=signup?"Creating account…":"Signing in…";
     if(signup){
+      if(await usernameAvailable(uname)===false){ btn.disabled=false; msg.textContent="That username is taken — try another."; return; }
       const { data, error } = await sb.auth.signUp({ email, password: pass, options:{ data:{ username: uname }, emailRedirectTo: APP_URL() } });
       btn.disabled=false;
       if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
@@ -2490,9 +2520,14 @@ function renderLogin(){
         msg.className="loginmsg ok"; msg.textContent="Account created — check your email to confirm, then sign in.";
       }                                        // else: confirmation OFF -> SIGNED_IN closes the screen
     }else{
+      if(byUsername){                          // username -> look up the email (needs the right password)
+        const r=await emailForUsername(email.replace(/^@/,""), pass);
+        if(r.err){ btn.disabled=false; msg.className="loginmsg"; msg.textContent=r.err; return; }
+        email=r.email;
+      }
       const { error } = await sb.auth.signInWithPassword({ email, password: pass });
       btn.disabled=false;
-      if(error){ msg.className="loginmsg"; msg.textContent=friendlyAuthError(error); return; }
+      if(error){ msg.className="loginmsg"; msg.textContent=byUsername && /invalid login/i.test(error.message||"") ? "That username or password doesn't match." : friendlyAuthError(error); return; }
       // success -> SIGNED_IN handler closes the screen and syncs
     }
   };
@@ -2504,7 +2539,7 @@ function renderLogin(){
   const forgot=el.querySelector("#forgot");
   if(forgot) forgot.onclick=async ()=>{
     const email=(emailEl.value||"").trim();
-    if(!email){ msg.className="loginmsg"; msg.textContent="Type your email above first, then tap Forgot password."; return; }
+    if(!email || !email.includes("@")){ msg.className="loginmsg"; msg.textContent="Type your email (not your username) above, then tap Forgot password."; return; }
     msg.className="loginmsg"; msg.textContent="Sending reset link…";
     const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: APP_URL() });
     msg.className = error ? "loginmsg" : "loginmsg ok";
@@ -2874,17 +2909,29 @@ function restoreStrips(v){
   if(ds) ds.addEventListener("scroll",save,{passive:true});
 }
 
+/* The calendar follows the NBA's own (US Eastern) game days, so a late tip-off still belongs to the
+   night it's played in the US — e.g. opening night 20 Oct shows 3 games. Times stay in your time zone. */
+const US_TZ="America/New_York";
+function groupByUSDay(games){
+  const m=new Map();
+  for(const g of games){ const k=dateKey(g.ms,US_TZ); (m.get(k)||m.set(k,[]).get(k)).push(g); }
+  return m;
+}
+function usDayLabel(key){
+  return new Intl.DateTimeFormat("en-GB",{timeZone:"UTC",weekday:"short",day:"2-digit",month:"short",year:"numeric"})
+    .format(new Date(Date.UTC(+key.slice(0,4), +key.slice(5,7)-1, +key.slice(8,10))));
+}
 function renderCalendar(){
-  const groups=groupByDay(regularGames());
+  const groups=groupByUSDay(regularGames());
   if(!state.cal){
     // open on the current month if the season is on, otherwise the first month with games
-    const nowK=dateKey(Date.now(),state.region);
+    const nowK=dateKey(Date.now(),US_TZ);
     const has=[...groups.keys()].some(k=>k.startsWith(nowK.slice(0,7)));
     const base=has?nowK:([...groups.keys()].sort()[0]||nowK);
     state.cal={y:+base.slice(0,4), m:+base.slice(5,7)-1};
   }
   const {y,m}=state.cal;
-  const todayK=dateKey(Date.now(),state.region);
+  const todayK=dateKey(Date.now(),US_TZ);           // today's US game night
   const monthName=new Intl.DateTimeFormat("en-GB",{timeZone:"UTC",month:"long",year:"numeric"}).format(new Date(Date.UTC(y,m,1)));
   const startDow=(new Date(Date.UTC(y,m,1)).getUTCDay()+6)%7; // Monday first
   const days=new Date(Date.UTC(y,m+1,0)).getUTCDate();
@@ -2908,17 +2955,18 @@ function renderCalendar(){
     <button id="next" aria-label="Next month">&rsaquo;</button>
     <button class="link" id="today">Today</button>
   </div>
+  <p class="calnote">Game days follow US dates (ET) · tip-off times are in your time zone</p>
   <div class="grid">${dows.map(d=>`<div class="dow">${d}</div>`).join("")}${cells}</div>
   <div class="daypanel" id="daypanel"></div>`;
   const v=document.getElementById("view"); v.innerHTML=html;
   v.querySelector("#prev").onclick=()=>{ state.cal={y:m===0?y-1:y, m:(m+11)%12}; state.selDay=null; render(); };
   v.querySelector("#next").onclick=()=>{ state.cal={y:m===11?y+1:y, m:(m+1)%12}; state.selDay=null; render(); };
-  v.querySelector("#today").onclick=()=>{ const k=dateKey(Date.now(),state.region); state.cal={y:+k.slice(0,4), m:+k.slice(5,7)-1}; state.selDay=k; render(); };
+  v.querySelector("#today").onclick=()=>{ const k=dateKey(Date.now(),US_TZ); state.cal={y:+k.slice(0,4), m:+k.slice(5,7)-1}; state.selDay=k; render(); };
   v.querySelectorAll(".cell[data-day]").forEach(c=>c.onclick=()=>{ state.selDay=(state.selDay===c.dataset.day)?null:c.dataset.day; render(); });
   if(state.selDay){
     const gs=groups.get(state.selDay)||[];
     const panel=v.querySelector("#daypanel");
-    panel.innerHTML=`<div class="dayhead"><span>${gs.length?dayLabel(gs[0].ms,state.region):state.selDay}</span><span class="cnt">${dayCount(gs.length)}</span></div>`
+    panel.innerHTML=`<div class="dayhead"><span>${usDayLabel(state.selDay)} <span class="cnt">(US)</span></span><span class="cnt">${dayCount(gs.length)}</span></div>`
       + (gs.length?gs.map(gameRow).join(""):`<div class="empty">No games.</div>`);
     wireGames(panel);
   }
