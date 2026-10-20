@@ -1,11 +1,12 @@
-name: Update schedule
+name: Update NBA Schedule
 
 on:
   schedule:
-    # Twice a day, after every NBA game has finished (late West Coast games end
-    # around 05:00–06:15 UTC, later in winter or with overtime):
-    - cron: "0 7 * * *"        # 07:00 UTC — early morning in Europe, all of last night's finals in
-    - cron: "0 13 * * *"       # 13:00 UTC — safety net (GitHub sometimes delays scheduled runs)
+    # Every 2 hours from midnight to 08:00 Greek time (00:00, 02:00, 04:00, 06:00, 08:00),
+    # while NBA games are being played and finishing. The time zone handles summer/winter
+    # time automatically. GitHub can start scheduled runs a little late when it's busy.
+    - cron: "0 0-8/2 * * *"
+      timezone: "Europe/Athens"
   workflow_dispatch:           # also run on demand from the Actions tab
 
 permissions:
