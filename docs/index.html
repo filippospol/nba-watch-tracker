@@ -179,6 +179,8 @@
   .score .dash{color:var(--faint); padding:0 3px}
   .reveal{font-size:11px; border:1px dashed var(--faint); color:var(--muted); padding:1px 7px; letter-spacing:.02em}
   .reveal:hover{color:var(--fg); border-color:var(--fg)}
+  .score[data-hide]{cursor:pointer}
+  .score[data-hide]:hover .dash{color:var(--fg)}
 
   .nowline{display:flex; align-items:center; gap:8px; margin:0; padding:8px 0 6px; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--accent); font-weight:600}
   .nowline::before{content:""; width:7px; height:7px; background:var(--accent); flex:none}
@@ -296,6 +298,13 @@
   .lazysent{height:1px}
   /* all-season bar (replaces the day strip in whole-season view) */
   .allbar{display:flex; align-items:center; gap:14px; margin:10px 0 0; font-size:12px; color:var(--muted)}
+  /* earlier days folded away above the latest game day */
+  .earlier{display:flex; align-items:center; gap:9px; width:100%; margin:12px 0 2px; padding:9px 11px; border:1px dashed var(--rule); background:none; color:var(--muted); font-size:12.5px; text-align:left; cursor:pointer}
+  .earlier:hover{color:var(--fg); border-color:var(--fg)}
+  .earlier .arr{display:inline-block; font-size:11px; transition:transform .18s ease}
+  .earlier.open .arr{transform:rotate(90deg)}
+  .earlier .sub{margin-left:auto; font-size:11.5px; color:var(--faint)}
+  .teamhdr .reveal{font-size:11px; padding:0 7px; vertical-align:1px}
   .allbar .allcount{margin-left:auto}
   .allbar .link{border:0; background:none; color:var(--accent); text-decoration:underline; text-underline-offset:2px; cursor:pointer; padding:0; font-weight:500}
   .allbar .link:hover{color:var(--fg)}
@@ -1832,7 +1841,7 @@ const state={
   condensed:new Set(),           // subset of watched: games seen as a condensed replay (counted exactly like full games)
   region:store.get("nba_region","Europe/Athens"),
   hideScores:store.get("nba_hide_scores",true),   // spoiler shield on by default
-  revealed:new Set(),
+  revealed:new Set(store.get("nba_revealed_guest",[]).map(String)),   // games whose score you chose to see
   view:"list",
   cal:null, selDay:null,
   team:"", wfilter:"all", search:"",
@@ -2054,7 +2063,7 @@ function applyPrefs(p){
   if(typeof p.region==="string" && p.region){ state.region=p.region; store.set("nba_region",p.region); if(typeof renderTzButton==="function") renderTzButton(); }
   if(p.theme==="light"||p.theme==="dark"){ document.documentElement.setAttribute("data-theme",p.theme); store.set("nba_theme",p.theme); }
   else if(p.theme===""){ document.documentElement.removeAttribute("data-theme"); store.set("nba_theme",null); }
-  if(typeof p.hideScores==="boolean"){ state.hideScores=p.hideScores; store.set("nba_hide_scores",p.hideScores); state.revealed.clear(); }
+  if(typeof p.hideScores==="boolean"){ state.hideScores=p.hideScores; store.set("nba_hide_scores",p.hideScores); }
   if(typeof updateThemeUI==="function") updateThemeUI();
 }
 
@@ -2074,6 +2083,10 @@ async function initStore(){
       state.sync="account";
       if(changed){
         cloudReady=false;
+        if(!prev && evt==="SIGNED_IN" && state.revealed.size){        // reveals made before signing in move into the account
+          for(const id of state.revealed) if(!pendingRev.has(id)) pendingRev.set(id,true);
+          store.set("nba_revealed_guest",[]);
+        }
         restorePending();          // unsaved changes this device kept for this account
         showCached();              // last-known list right away (also works offline), then refresh it
         pullCloud();
@@ -2102,6 +2115,8 @@ async function initStore(){
    • Pending changes are kept on this device until saved (survive refresh / closed tab / offline). */
 let pending=new Map();          // gameId -> "full" | "condensed" | null (removed), not yet in the account
 let pendingPrefs=false, prefsVer=0;
+let pendingRev=new Map();       // gameId -> true (score revealed) | false (hidden again), not yet in the account
+const hasPending=()=>pending.size>0 || pendingPrefs || pendingRev.size>0;
 let syncState="idle";           // "saving" | "saved" | "offline" | "error"
 let saving=false, saveAgain=false, retryTimer=null, retryDelay=2000, lastPull=0;
 let casSupported=true;          // false if the table has no updated_at column -> plain (but still merged) writes
@@ -2109,7 +2124,7 @@ let casSupported=true;          // false if the table has no updated_at column -
 const pendKey=()=>currentUser?("nba_pending_"+currentUser.id):null;
 function persistPending(){
   const k=pendKey(); if(!k) return;           // logged-out ticks are never stored
-  try{ if(pending.size||pendingPrefs) store.set(k,{ops:[...pending],prefs:pendingPrefs}); else localStorage.removeItem(k); }catch(e){}
+  try{ if(hasPending()) store.set(k,{ops:[...pending],prefs:pendingPrefs,rev:[...pendingRev]}); else localStorage.removeItem(k); }catch(e){}
 }
 function restorePending(){
   const k=pendKey(); if(!k) return;
@@ -2121,7 +2136,24 @@ function restorePending(){
       if(!pending.has(id)) pending.set(id,t);
     }
     if(v.prefs) pendingPrefs=true;
+    if(Array.isArray(v.rev)) for(const op of v.rev){ if(Array.isArray(op) && !pendingRev.has(String(op[0]))) pendingRev.set(String(op[0]), !!op[1]); }
   }
+}
+/* Revealed scores = the account's list (prefs.revealed) + this device's unsaved reveal changes. */
+function cloudRevealed(prefs){ return new Set(Array.isArray(prefs && prefs.revealed) ? prefs.revealed.filter(x=>typeof x==="string") : []); }
+function applyRevOps(set,ops){ for(const [id,on] of ops){ if(on) set.add(id); else set.delete(id); } return set; }
+function syncRevealedView(){
+  if(!currentUser) return;
+  const r=applyRevOps(cloudRevealed(base && base.prefs), pendingRev);
+  const changed=[...r].some(id=>!state.revealed.has(id)) || [...state.revealed].some(id=>!r.has(id));
+  state.revealed=r;
+  return changed;
+}
+/* Reveal (or hide again) one game's score. Signed in: saved to the account; signed out: this device. */
+function setRevealed(id,on){
+  if(on) state.revealed.add(id); else state.revealed.delete(id);
+  if(currentUser){ pendingRev.set(id,!!on); persistPending(); queueSave(); }
+  else store.set("nba_revealed_guest",[...state.revealed]);
 }
 /* Last copy of the account seen on this device: lets the list show instantly and offline.
    It's only ever a starting point — the account itself is re-read and always wins. */
@@ -2155,10 +2187,12 @@ function showCached(){
     base={ w:new Set(w), c:new Set(c), prefs:(v.prefs && typeof v.prefs==="object")?v.prefs:null, ver:v.ver, exists:v.exists };
   applyOps(w,c,pending);
   state.watched=w; state.condensed=c;
+  state.revealed=applyRevOps(cloudRevealed(v && v.prefs), pendingRev);
 }
 function resetAccountState(){
   clearTimeout(writeTimer); clearTimeout(retryTimer);
-  pending=new Map(); pendingPrefs=false; cloudReady=false; syncState="idle"; retryDelay=2000; base=null;
+  pending=new Map(); pendingPrefs=false; pendingRev=new Map(); cloudReady=false; syncState="idle"; retryDelay=2000; base=null;
+  state.revealed=new Set(store.get("nba_revealed_guest",[]).map(String));   // back to this device's own reveals
   state.watched=new Set(); state.condensed=new Set();
 }
 function setSync(s){ if(syncState!==s){ syncState=s; setStatus(); } }
@@ -2256,16 +2290,17 @@ async function pullCloud(){
   if(cp && Object.keys(cp).length){ if(!pendingPrefs) applyPrefs(cp); }   // the account's settings win
   else if(prefsSupported && !cloudReady){ pendingPrefs=true; prefsVer++; } // account has none yet: save this device's
   const after=collectPrefs();
+  const revChanged=syncRevealedView();
   const first=!cloudReady; cloudReady=true;
-  if(syncState==="offline"||syncState==="error"||syncState==="idle") setSync(pending.size||pendingPrefs?"saving":"saved");
-  showSynced(w,c, first || after.region!==before.region || after.hideScores!==before.hideScores);
-  if(pending.size||pendingPrefs) queueSave();
+  if(syncState==="offline"||syncState==="error"||syncState==="idle") setSync(hasPending()?"saving":"saved");
+  showSynced(w,c, first || revChanged || after.region!==before.region || after.hideScores!==before.hideScores);
+  if(hasPending()) queueSave();
 }
 function pullSoon(){ if(currentUser && cloudReady && !saving && Date.now()-lastPull>3000) pullCloud(); }
 
 function queueSave(){
   if(!sb || !currentUser || !cloudReady) return;             // logged out, or account not loaded yet
-  if(!pending.size && !pendingPrefs) return;
+  if(!hasPending()) return;
   setSync("saving");
   clearTimeout(writeTimer);
   writeTimer=setTimeout(saveNow,400);
@@ -2275,10 +2310,10 @@ async function saveNow(){
   clearTimeout(writeTimer);
   if(!sb || !currentUser || !cloudReady) return;
   if(saving){ saveAgain=true; return; }
-  if(!pending.size && !pendingPrefs){ setSync("saved"); return; }
+  if(!hasPending()){ setSync("saved"); return; }
   saving=true; setSync("saving");
   const uid=currentUser.id;
-  const ops=new Map(pending), prefsDirty=pendingPrefs, pv=prefsVer;   // what this attempt commits
+  const ops=new Map(pending), prefsDirty=pendingPrefs, pv=prefsVer, revOps=new Map(pendingRev);   // what this attempt commits
   let ok=false;
   try{
     let needRead=!base;
@@ -2297,7 +2332,12 @@ async function saveNow(){
       const row={ watched:[...w] };
       if(casSupported) row.updated_at=new Date().toISOString();
       if(condensedSupported) row.condensed=[...c];
-      if(prefsSupported && prefsDirty) row.prefs=collectPrefs();
+      if(prefsSupported && (prefsDirty || revOps.size)){
+        // settings: this device's if it changed them, otherwise keep the account's; reveals: merged one by one
+        const pr = prefsDirty ? collectPrefs() : { ...(base.prefs || {}) };
+        pr.revealed=[...applyRevOps(cloudRevealed(base.prefs), revOps)];
+        row.prefs=pr;
+      }
       const back=casSupported?"updated_at":"user_id";         // the reply is just the new version stamp
       let res; netStats.writes++;
       if(!base.exists){
@@ -2321,28 +2361,30 @@ async function saveNow(){
       // Committed: forget the changes we just saved (unless they were changed again meanwhile).
       for(const [id,t] of ops) if(pending.has(id) && pending.get(id)===t) pending.delete(id);
       if(prefsDirty && prefsVer===pv) pendingPrefs=false;
+      for(const [id,on] of revOps) if(pendingRev.has(id) && pendingRev.get(id)===on) pendingRev.delete(id);
       persistPending();
+      syncRevealedView();
       const vw=new Set(w), vc=new Set(c); applyOps(vw,vc,pending);   // other devices' changes now shown too
       showSynced(vw,vc,false);
       retryDelay=2000;
     }
     if(!ok) throw new Error("save conflict");
-    setSync(pending.size||pendingPrefs?"saving":"saved");
+    setSync(hasPending()?"saving":"saved");
   }catch(e){
     failSync();
   }finally{
     saving=false;
-    if((saveAgain || pending.size || pendingPrefs) && syncState==="saving" && currentUser){ saveAgain=false; queueSave(); }
+    if((saveAgain || hasPending()) && syncState==="saving" && currentUser){ saveAgain=false; queueSave(); }
     saveAgain=false;
   }
 }
 /* Wait for outstanding changes to reach the account (used before signing out). */
 async function flushSave(){
-  for(let i=0; i<40 && (saving || pending.size || pendingPrefs); i++){
+  for(let i=0; i<40 && (saving || hasPending()); i++){
     if(!saving) await saveNow(); else await new Promise(r=>setTimeout(r,150));
     if(syncState==="error" || syncState==="offline") break;
   }
-  return !(pending.size || pendingPrefs);
+  return !hasPending();
 }
 function prefsChanged(){                          // a setting changed on this device
   if(!currentUser) return;                        // signed out: settings stay on this device only
@@ -2351,12 +2393,12 @@ function prefsChanged(){                          // a setting changed on this d
 /* keep every open device current */
 document.addEventListener("visibilitychange",()=>{
   if(!currentUser || !sb) return;
-  if(document.visibilityState==="hidden"){ if(pending.size||pendingPrefs) saveNow(); }   // phone backgrounded: save now
+  if(document.visibilityState==="hidden"){ if(hasPending()) saveNow(); }   // phone backgrounded: save now
   else pullSoon();
 });
 window.addEventListener("focus", pullSoon);
 window.addEventListener("pageshow", e=>{ if(e.persisted) pullSoon(); });               // restored from back/forward cache
-window.addEventListener("online", ()=>{ retryDelay=2000; if(!currentUser) return; if(cloudReady && (pending.size||pendingPrefs)) saveNow(); else pullCloud(); });
+window.addEventListener("online", ()=>{ retryDelay=2000; if(!currentUser) return; if(cloudReady && hasPending()) saveNow(); else pullCloud(); });
 window.addEventListener("offline",()=>{ if(currentUser) setSync("offline"); });
 window.addEventListener("storage", e=>{ if(currentUser && e.key===pendKey()) pullSoon(); });   // another tab in this browser
 /* Background checks only while someone is actually using the app: a tab left open all day
@@ -2688,7 +2730,8 @@ function scoreCell(g,ph){
   if(state.hideScores && !state.revealed.has(g.id))
     return `<span class="score"><button class="reveal" data-reveal="${g.id}" type="button" aria-label="Show final score">Score</button></span>`;
   const aw=s.as>s.hs, hw=s.hs>s.as;
-  return `<span class="score">${aw?`<b>${s.as}</b>`:`<span class="l">${s.as}</span>`}<span class="dash">–</span>${hw?`<b>${s.hs}</b>`:`<span class="l">${s.hs}</span>`}</span>`;
+  const hideAttr = state.hideScores ? ` data-hide="${g.id}" title="Tap to hide this score again"` : "";
+  return `<span class="score"${hideAttr}>${aw?`<b>${s.as}</b>`:`<span class="l">${s.as}</span>`}<span class="dash">–</span>${hw?`<b>${s.hs}</b>`:`<span class="l">${s.hs}</span>`}</span>`;
 }
 const ldFmt={};
 function localDateLabel(ms,tz){ (ldFmt[tz]??=new Intl.DateTimeFormat("en-GB",{timeZone:tz,weekday:"short",day:"numeric",month:"short"})); return ldFmt[tz].format(new Date(ms)).replace(",",""); }
@@ -2799,7 +2842,9 @@ function teamHeaderHtml(T){
     <span class="tlogo">${logo(T)}</span>
     <div class="tmeta">
       <div class="tname">${T}</div>
-      <div class="tstat">${EAST.has(T)?"Eastern":"Western"} &middot; <b>${rec}</b> record &middot; <b id="team-watched">${st.watched}</b> of ${st.total} watched</div>
+      <div class="tstat">${EAST.has(T)?"Eastern":"Western"} &middot; <span id="team-rec">${(state.hideScores && state.recShownFor!==T)
+            ? `<button class="reveal" id="f-showrec" type="button" aria-label="Show ${esc(T)} record" title="Hidden while Hide scores is on">Record</button>`
+            : `<b>${rec}</b> record`}</span> &middot; <b id="team-watched">${st.watched}</b> of ${st.total} watched</div>
     </div>
     <button class="tclear" id="f-clearteam" type="button">&times; All teams</button>
     ${nxt}
@@ -2834,6 +2879,7 @@ function renderList(){
       <input type="text" id="f-s" placeholder="Find a team" aria-label="Find a team" value="${state.search.replace(/"/g,"&quot;")}">
     </div>`;
 
+  const lastKey=lastPlayedKey(groups);
   let top="", listKeys;
   if(teamMode){
     // Team picked: header on top, month/day strips hidden, whole season listed.
@@ -2843,8 +2889,9 @@ function renderList(){
     const monthKeys=[...new Set(allDayKeys.map(k=>k.slice(0,7)))].sort();
     // "all" is a valid month value (whole-season view); otherwise pin to a real month
     if(state.month!=="all" && (!state.month || !monthKeys.includes(state.month))){
-      const nowM=dateKey(Date.now(),tz).slice(0,7);
-      state.month=monthKeys.includes(nowM)?nowM:monthKeys[0]; state.day=null;
+      // open on the month of the latest game day (so its games are right there), else this month
+      const nowM=dateKey(Date.now(),tz).slice(0,7), lastM=lastKey?lastKey.slice(0,7):null;
+      state.month=(lastM && monthKeys.includes(lastM))?lastM:monthKeys.includes(nowM)?nowM:monthKeys[0]; state.day=null;
     }
     const allPill=`<button data-m="all" class="${state.month==="all"?"on":""}">All season</button>`;
     const months=allPill+monthKeys.map(mk=>`<button data-m="${mk}" class="${mk===state.month?"on":""}">${monthLabel(mk,true)}</button>`).join("");
@@ -2870,6 +2917,23 @@ function renderList(){
     }
   }
 
+  // Fold away the days before the latest game day (one tap shows them again).
+  // Not when a single day, a team, or a filter/search is picked — then everything stays visible.
+  let fold=null;
+  if(!teamMode && !state.day && state.wfilter==="all" && !state.search && lastKey && listKeys.includes(lastKey)){
+    const before=listKeys.filter(k=>k<lastKey && (groups.get(k)||[]).some(passes));
+    if(before.length){
+      const n=before.reduce((t,k)=>t+groups.get(k).filter(passes).length,0);
+      const fkey=state.view+"|"+state.month;
+      const open=state.earlierOpen===fkey;
+      if(!open) listKeys=listKeys.filter(k=>k>=lastKey);
+      fold={ key:fkey, open, last:lastKey,
+        html:`<button class="earlier${open?" open":""}" id="f-earlier" type="button" aria-expanded="${open}">`
+            +`<span class="arr" aria-hidden="true">&#9656;</span>${open?"Hide":"Show"} ${before.length} earlier ${before.length===1?"day":"days"}`
+            +`<span class="sub">${n} ${n===1?"game":"games"}</span></button>` };
+    }
+  }
+
   const {blocks,any}=dayBlocksArr(listKeys,groups,passes);
   v.innerHTML = top + `<div class="gamelist" id="gamelist"></div>` + (any?``:`<div class="empty">Nothing matches.</div>`);
 
@@ -2879,11 +2943,45 @@ function renderList(){
   v.querySelector("#f-team").onchange=e=>{ state.team=e.target.value; state.day=null; render(); };
   const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
   const jt=v.querySelector("#f-today"); if(jt) jt.onclick=jumpToToday;
-  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; state.revealed.clear(); store.set("nba_hide_scores",state.hideScores); render(); prefsChanged(); };
+  v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; store.set("nba_hide_scores",state.hideScores); render(); prefsChanged(); };
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
   if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
+  if(fold) placeFold(v.querySelector("#gamelist"), fold);
+  const sr=v.querySelector("#f-showrec");
+  if(sr) sr.onclick=()=>{ state.recShownFor=state.team; const box=v.querySelector("#team-rec"); if(box){ const st=teamStats(state.team); box.innerHTML=`<b>${(st.w||st.l)?`${st.w}&ndash;${st.l}`:"&mdash;"}</b> record`; } };
   restoreStrips(v);
+}
+
+/* Latest day (in the list's own day grouping) with at least one finished game. */
+function lastPlayedKey(groups){
+  const now=Date.now();
+  const keys=[...groups.keys()].sort();
+  for(let i=keys.length-1;i>=0;i--) if(groups.get(keys[i]).some(g=>phase(g,now)==="final")) return keys[i];
+  return null;
+}
+/* Folded: the bar sits at the top of the list. Open: it sits between the earlier days and the
+   latest game day, so the earlier days appear right where you tapped. */
+function placeFold(list,fold){
+  if(!list) return;
+  const tmp=document.createElement("div"); tmp.innerHTML=fold.html; const bar=tmp.firstElementChild;
+  if(!fold.open){ list.prepend(bar); }
+  else{
+    const find=()=>list.querySelector(`.dayhead[data-dk="${fold.last}"]`);
+    let h=find(), guard=0;
+    while(!h && !_lazyDone && _lazyMore && guard++<400){ _lazyMore(); h=find(); }   // whole-season list loads lazily
+    if(!h){ list.prepend(bar); }
+    else{ const prev=h.previousElementSibling; list.insertBefore(bar, (prev && prev.classList.contains("nowline")) ? prev : h); }
+  }
+  bar.onclick=()=>{
+    const y0=bar.getBoundingClientRect().top;
+    state.earlierOpen = fold.open ? null : fold.key;
+    render();
+    if(fold.open){                                   // folding up: keep the bar where your finger was
+      const nb=document.getElementById("f-earlier");
+      if(nb) window.scrollBy(0, nb.getBoundingClientRect().top - y0);
+    }
+  };
 }
 
 /* Keep the selected month and the selected day (or today) in view inside the sideways-scrolling strips.
@@ -3220,8 +3318,10 @@ function wireGames(root){
   root.querySelectorAll(".game[data-id]").forEach(el=>{
     el.onclick=e=>{
       const r=e.target.closest("[data-reveal]");
-      if(r){ e.stopPropagation();
-        const id=r.dataset.reveal; state.revealed.add(id);
+      const h=!r && e.target.closest("[data-hide]");
+      if(r || h){ e.stopPropagation();
+        const id=r ? r.dataset.reveal : h.dataset.hide;
+        setRevealed(id, !!r);
         const g=state.games.find(x=>x.id===id), cell=el.querySelector(".score");
         if(g&&cell){ const tmp=document.createElement("div"); tmp.innerHTML=scoreCell(g,phase(g,Date.now())); const nn=tmp.firstElementChild; if(nn) cell.replaceWith(nn); }
         return;
