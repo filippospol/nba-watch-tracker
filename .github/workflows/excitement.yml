@@ -1,0 +1,43 @@
+name: Update Excitement Ratings
+
+on:
+  schedule:
+    # 20 minutes after each schedule refresh (00:20–08:20 Greek time), so final
+    # scores and win-probability are published before we rate the games.
+    - cron: "20 0-8/2 * * *"
+      timezone: "Europe/Athens"
+  workflow_dispatch:           # also run on demand from the Actions tab
+
+permissions:
+  contents: write              # allow the job to commit ratings.json back
+
+# Don't let two runs push at once.
+concurrency:
+  group: excitement
+  cancel-in-progress: false
+
+jobs:
+  excitement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rate recently finished games
+        run: python scripts/excitement.py          # last few days by default
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ratings.json
+          if git diff --cached --quiet; then
+            echo "No ratings changes."
+          else
+            git commit -m "Update ratings.json"
+            git pull --rebase
+            git push
+          fi
