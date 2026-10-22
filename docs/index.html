@@ -193,6 +193,15 @@
   .switch[aria-checked="true"]{color:var(--fg)}
   .switch[aria-checked="true"] .trk{border-color:var(--fg)}
   .switch[aria-checked="true"] .trk::after{left:14px; background:var(--accent)}
+  /* spoiler-light excitement meter on finished games (opt-in) */
+  .hype{display:inline-flex; align-items:flex-end; gap:2px; height:11px; margin-top:3px; vertical-align:bottom}
+  .hype i{width:3px; height:4px; background:var(--rule); display:block}
+  .hype i:nth-child(2){height:6px} .hype i:nth-child(3){height:8px}
+  .hype i:nth-child(4){height:10px} .hype i:nth-child(5){height:12px}
+  .hype i.on{background:currentColor}
+  .hype.t-skip{color:var(--faint)} .hype.t-good{color:var(--fg)} .hype.t-must{color:var(--accent)}
+  .hype.inline{height:10px; margin:0 0 0 8px}
+  .hype.inline i:nth-child(5){height:11px}
 
   /* stats */
   .sumline{display:flex; flex-wrap:wrap; gap:6px 22px; margin:16px 0 4px; font-size:12.5px; color:var(--muted)}
@@ -1841,6 +1850,7 @@ const state={
   condensed:new Set(),           // subset of watched: games seen as a condensed replay (counted exactly like full games)
   region:store.get("nba_region","Europe/Athens"),
   hideScores:store.get("nba_hide_scores",true),   // spoiler shield on by default
+  showHype:store.get("nba_hype",false),           // opt-in excitement meter on finished games
   revealed:new Set(store.get("nba_revealed_guest",[]).map(String)),   // games whose score you chose to see
   view:"list",
   cal:null, selDay:null,
@@ -1937,6 +1947,32 @@ function loadSeed(){ return rowsToSeed(SEED); }
    scores), and fall back silently to the embedded SEED snapshot if it can't be reached.
    Fetched from raw GitHub so it works no matter which folder Pages serves from. */
 const SCHEDULE_URL = "https://raw.githubusercontent.com/filippospol/nba-watch-tracker/main/schedule.json";
+/* Spoiler-light excitement ratings, keyed by game id (same id the app builds).
+   Built nightly by scripts/excitement.py from ESPN win-probability. Optional:
+   if the file isn't there yet, the meter simply doesn't show. */
+const RATINGS_URL = "https://raw.githubusercontent.com/filippospol/nba-watch-tracker/main/ratings.json";
+let RATINGS={};
+async function loadRatings(){
+  try{
+    const res=await fetch(RATINGS_URL,{cache:"no-cache"});
+    if(!res.ok) return;
+    const data=await res.json();
+    if(data && typeof data==="object" && !Array.isArray(data)){ RATINGS=data; if(state.showHype) render(); }
+  }catch(e){ /* not published yet / offline */ }
+}
+function hypeLevel(x){ return x>=85?5:x>=70?4:x>=55?3:x>=42?2:1; }   // 1..5
+function hypeTier(t){ return t==="must"?"t-must":t==="good"?"t-good":"t-skip"; }
+/* The meter (never shows score, margin or winner). `inline` places it after the score. */
+function hypeHtml(g,ph,inline){
+  if(!state.showHype || ph!=="final") return "";
+  const r=RATINGS[g.id]; if(!r || typeof r.x!=="number") return "";
+  const n=hypeLevel(r.x), label=hypeTier(r.t);
+  const word=r.t==="must"?"Must-watch":r.t==="good"?"Worth it":"Low-key";
+  const tags=Array.isArray(r.tags)&&r.tags.length?" · "+r.tags.join(" · "):"";
+  const bars=[1,2,3,4,5].map(i=>`<i class="${i<=n?"on":""}"></i>`).join("");
+  const title=`Hype ${word} · ${r.x}/100${tags}`;
+  return `<span class="hype ${label}${inline?" inline":""}" title="${esc(title)}" aria-label="${esc(title)}">${bars}</span>`;
+}
 async function loadLiveSchedule(){
   try{
     const res = await fetch(SCHEDULE_URL, { cache:"no-cache" });
@@ -2056,7 +2092,8 @@ function wireUsernameInput(inp,msg){
 function collectPrefs(){
   return { region: state.region,
            theme: document.documentElement.getAttribute("data-theme") || "",   // "" = follow the device
-           hideScores: !!state.hideScores };
+           hideScores: !!state.hideScores,
+           showHype: !!state.showHype };
 }
 function applyPrefs(p){
   if(!p || typeof p!=="object") return;
@@ -2064,6 +2101,7 @@ function applyPrefs(p){
   if(p.theme==="light"||p.theme==="dark"){ document.documentElement.setAttribute("data-theme",p.theme); store.set("nba_theme",p.theme); }
   else if(p.theme===""){ document.documentElement.removeAttribute("data-theme"); store.set("nba_theme",null); }
   if(typeof p.hideScores==="boolean"){ state.hideScores=p.hideScores; store.set("nba_hide_scores",p.hideScores); }
+  if(typeof p.showHype==="boolean"){ state.showHype=p.showHype; store.set("nba_hype",p.showHype); }
   if(typeof updateThemeUI==="function") updateThemeUI();
 }
 
@@ -2741,8 +2779,9 @@ function gameRow(g,now,opts){
   const on=state.watched.has(g.id), c=on&&state.condensed.has(g.id);
   const ph=phase(g,now);
   const st=ph==="final"?`<span class="st">Final</span>`:ph==="live"?`<span class="st live">Live</span>`:"";
+  const hype=hypeHtml(g,ph,false);
   return `<div class="game${on?" watched":""}${c?" condensed":""}${ph==="final"?" done":""}" data-id="${g.id}" tabindex="0" role="checkbox" aria-checked="${on}">
-    <span class="time">${timeLabel(g.ms,state.region)}${opts.usDay?`<span class="ld${dateKey(g.ms,state.region)!==opts.usDay?" next":""}">${localDateLabel(g.ms,state.region)}</span>`:""}${st}</span>
+    <span class="time">${timeLabel(g.ms,state.region)}${opts.usDay?`<span class="ld${dateKey(g.ms,state.region)!==opts.usDay?" next":""}">${localDateLabel(g.ms,state.region)}</span>`:""}${st}${hype}</span>
     <span class="match"><span class="tm">${logo(g.away)}${short(g.away)}</span><span class="at">@</span><span class="tm home">${logo(g.home)}${short(g.home)}</span></span>
     ${scoreCell(g,ph)}
     <span class="mark" title="${markTitle(on,c)}"><span class="ctag" aria-hidden="true">C</span><span class="box" aria-hidden="true"></span></span>
@@ -2875,6 +2914,7 @@ function renderList(){
       <span class="seg">${seg}</span>
       <select id="f-team" aria-label="Team">${teamOpts}</select>
       <button class="switch" id="f-spoil" type="button" role="switch" aria-checked="${state.hideScores}"><span class="trk"></span>Hide scores</button>
+      <button class="switch" id="f-hype" type="button" role="switch" aria-checked="${state.showHype}" title="Show a spoiler-light excitement meter on finished games — how good a watch, never who won"><span class="trk"></span>Hype meter</button>
       <span class="grow"></span>
       <input type="text" id="f-s" placeholder="Find a team" aria-label="Find a team" value="${state.search.replace(/"/g,"&quot;")}">
     </div>`;
@@ -2944,6 +2984,7 @@ function renderList(){
   const clr=v.querySelector("#f-clearteam"); if(clr) clr.onclick=()=>{ state.team=""; render(); };
   const jt=v.querySelector("#f-today"); if(jt) jt.onclick=jumpToToday;
   v.querySelector("#f-spoil").onclick=()=>{ state.hideScores=!state.hideScores; store.set("nba_hide_scores",state.hideScores); render(); prefsChanged(); };
+  v.querySelector("#f-hype").onclick=()=>{ state.showHype=!state.showHype; store.set("nba_hype",state.showHype); render(); prefsChanged(); };
   const s=v.querySelector("#f-s"); s.oninput=e=>{ state.search=e.target.value; render(); const n=document.getElementById("f-s"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
 
   if(any) mountBlocks(v.querySelector("#gamelist"), blocks);
@@ -3443,6 +3484,7 @@ function init(){
   setView(preseasonLive() ? "preseason" : "list"); setStatus();
   updatePreseasonTab();
   loadLiveSchedule();            // replace the embedded snapshot with the live schedule.json
+  loadRatings();                 // spoiler-light excitement meter (optional)
   loadLogos();
   initAuthUI();
   initStore();
