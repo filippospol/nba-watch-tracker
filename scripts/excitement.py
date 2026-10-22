@@ -77,43 +77,57 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
         tw += w
     tension = max(0.0, tens / tw)
 
-    # 3) FINISH — was it still in doubt down the stretch? Look at the closest the
-    #    game got to 50/50 across the final ~8% of plays.
-    tail = wp[max(0, int(len(wp) * 0.92)):]
-    finish = 1.0 - 2.0 * min(abs(p - 0.5) for p in tail)
-    finish = max(0.0, finish)
+    # 3) CLOSE_TIME — how long the game stayed genuinely competitive. Fraction of
+    #    plays where the win probability was inside a 35-65% band, weighted toward
+    #    the later stages. This is the "was it close for a long time" signal.
+    ct = 0.0
+    ctw = 0.0
+    for i, p in enumerate(wp):
+        w = 1.0 + 1.0 * (i / len(wp))
+        ct += w * (1.0 if abs(p - 0.5) <= 0.15 else 0.0)
+        ctw += w
+    close_time = ct / ctw
 
-    # 4) COMEBACK — how big a hole the eventual winner climbed out of.
+    # 4) FINISH — was it still in doubt down the stretch? Closest the game got to
+    #    50/50 across the final ~8% of plays (clutch time).
+    tail = wp[max(0, int(len(wp) * 0.92)):]
+    finish = max(0.0, 1.0 - 2.0 * min(abs(p - 0.5) for p in tail))
+
+    # 5) COMEBACK — how big a hole the eventual winner climbed out of.
     winner_home = wp[-1] >= 0.5
     win_series = wp if winner_home else [1 - p for p in wp]
     comeback = max(0.0, 0.5 - min(win_series)) * 2.0   # 0..1 (down to a near-loss)
 
-    # ---- combine the shape of the game (0..~1 each) -> 0..100 -------------
+    # ---- combine: the GAME ITSELF is ~94% of the score -------------------
+    # Weights sum to 1.0. Win-probability flow (swing + tension + close_time +
+    # finish) is the whole story; comeback is a small flow extra.
     base = (
-        100.0 * _norm(swing, 1.3, 9.5) * 0.48 +   # swing is the backbone
-        100.0 * tension * 0.21 +
-        100.0 * finish * 0.17 +
-        100.0 * comeback * 0.14
+        100.0 * _norm(swing, 1.3, 9.5) * 0.42 +   # total drama (the core GEI)
+        100.0 * tension * 0.18 +                  # how often it was a coin-flip
+        100.0 * close_time * 0.18 +               # close for a long stretch
+        100.0 * finish * 0.16 +                   # clutch-time doubt
+        100.0 * comeback * 0.06
     )
 
-    # ---- bonuses fans feel (kept small; never let them dominate) ----------
+    # ---- bonuses: game-shape extras first; player box score barely moves it
     bonus = 0.0
     if comeback >= 0.85:          # winner was once all but beaten
-        bonus += 8
+        bonus += 6
     elif comeback >= 0.70:
-        bonus += 4
-    if ot_periods >= 1:
-        bonus += 7 + 3 * (ot_periods - 1)         # 2OT, 3OT add more
-    if lead_changes >= 15:
-        bonus += 4
-    elif lead_changes >= 10:
-        bonus += 2
-    if triple_double:
-        bonus += 2
-    if top_scorer >= 50:
-        bonus += 5
-    elif top_scorer >= 40:
         bonus += 3
+    if ot_periods >= 1:
+        bonus += 6 + 3 * (ot_periods - 1)         # 2OT, 3OT add more
+    if lead_changes >= 15:
+        bonus += 3
+    elif lead_changes >= 10:
+        bonus += 1
+    # individual performance is deliberately minor (a point or two at most)
+    if top_scorer >= 50:
+        bonus += 2
+    elif top_scorer >= 40:
+        bonus += 1
+    if triple_double:
+        bonus += 1
 
     index = int(round(max(0.0, min(100.0, base + bonus))))
 
@@ -122,6 +136,7 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
         "swing_per100": round(swing_per100, 2),
         "swing": round(swing, 3),
         "tension": round(tension, 3),
+        "close_time": round(close_time, 3),
         "finish": round(finish, 3),
         "comeback": round(comeback, 3),
         "base": round(base, 1),
@@ -269,18 +284,9 @@ def rate_event(ev, *, debug=False):
     index, c = excitement(wp, ot_periods=ot, top_scorer=top, triple_double=td,
                           lead_changes=lc, debug=debug)
 
-    tags = []
-    if ot:
-        tags.append("OT" if ot == 1 else f"{ot}OT")
-    if c["comeback"] >= 0.70:
-        tags.append("comeback")
-    if c["finish"] >= 0.60:
-        tags.append("clutch finish")
-    if top >= 40:
-        tags.append(f"{top}-pt night")
-    if td:
-        tags.append("triple-double")
-    return gid, {"x": index, "t": tier(index), "tags": tags}
+    # The app shows only the Hype score (meter + "/100"), so ratings.json stays
+    # lean and carries no spoiler-y tags — no "comeback", no result hints.
+    return gid, {"x": index, "t": tier(index)}
 
 
 # ======================================================================
