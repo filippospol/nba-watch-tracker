@@ -194,15 +194,22 @@
   .switch[aria-checked="true"] .trk{border-color:var(--fg)}
   .switch[aria-checked="true"] .trk::after{left:14px; background:var(--accent)}
   /* spoiler-light excitement meter on finished games (opt-in) */
-  .hype{display:inline-flex; align-items:flex-end; gap:2px; height:11px; margin-top:3px; vertical-align:bottom}
-  .hype i{width:3px; height:4px; background:var(--rule); display:block}
-  .hype i:nth-child(2){height:6px} .hype i:nth-child(3){height:8px}
-  .hype i:nth-child(4){height:10px} .hype i:nth-child(5){height:12px}
-  .hype i.on{background:currentColor}
+  /* spoiler-light excitement — a half-gauge whose needle rises with the score */
+  .hype{display:inline-flex; align-items:center; line-height:0; cursor:default; vertical-align:middle}
+  .hype:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:3px}
+  .g .trk{stroke:var(--rule); fill:none} .g .arc, .g .ndl{stroke:currentColor; fill:none} .g .cap{fill:currentColor}
   .hype.t-skip{color:var(--faint)} .hype.t-good{color:var(--fg)} .hype.t-must{color:var(--accent)}
-  .hype.inline{height:10px; margin:0}
-  .hype.inline i:nth-child(5){height:11px}
   .scorewrap{display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0}
+  /* styled hover/tap card (matches the gauge) */
+  .hypetip{position:fixed; z-index:70; background:var(--bg); border:1px solid var(--rule-strong);
+    padding:11px 14px 9px; text-align:center; box-shadow:0 8px 22px -12px rgba(0,0,0,.5);
+    pointer-events:none; opacity:0; transform:translateY(3px); transition:opacity .12s ease, transform .12s ease}
+  .hypetip.show{opacity:1; transform:none}
+  .hypetip .num{font-size:22px; font-weight:600; letter-spacing:-.02em; margin-top:4px; font-variant-numeric:tabular-nums}
+  .hypetip .num small{font-size:12px; font-weight:500; color:var(--muted)}
+  .hypetip .word{font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; margin-top:2px}
+  .hypetip.t-skip{color:var(--faint)} .hypetip.t-good{color:var(--fg)} .hypetip.t-must{color:var(--accent)}
+  .hypetip .lead{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
 
   /* stats */
   .sumline{display:flex; flex-wrap:wrap; gap:6px 22px; margin:16px 0 4px; font-size:12.5px; color:var(--muted)}
@@ -1964,14 +1971,61 @@ async function loadRatings(){
 function hypeLevel(x){ return x>=85?5:x>=70?4:x>=55?3:x>=42?2:1; }   // 1..5
 function hypeTier(t){ return t==="must"?"t-must":t==="good"?"t-good":"t-skip"; }
 /* The meter (never shows score, margin or winner). `inline` places it after the score. */
+function hypeWord(t){ return t==="must"?"Must-watch":t==="good"?"Worth it":"Low-key"; }
+/* A half-circle gauge: grey track, a coloured arc filled to x%, and a needle.
+   f=0 -> needle left, f=1 -> needle right, f=0.5 -> straight up. */
+function gaugeSvg(x,{w=30,r=12,sw=3,pad=3}={}){
+  const f=Math.max(0,Math.min(1,x/100));
+  const cx=w/2, cy=r+pad, L=r*0.80;
+  const arcLen=Math.PI*r;
+  const th=Math.PI*(1-f);                        // needle angle from +x axis
+  const nx=(cx+L*Math.cos(th)).toFixed(2), ny=(cy-L*Math.sin(th)).toFixed(2);
+  const track=`M ${cx-r} ${cy} A ${r} ${r} 0 0 1 ${cx+r} ${cy}`;
+  return `<svg class="g" width="${w}" height="${cy+sw}" viewBox="0 0 ${w} ${cy+sw}" aria-hidden="true">`
+    +`<path class="trk" d="${track}" fill="none" stroke-width="${sw}" stroke-linecap="round"/>`
+    +`<path class="arc" d="${track}" fill="none" stroke-width="${sw}" stroke-linecap="round" `
+    +`stroke-dasharray="${arcLen.toFixed(2)}" stroke-dashoffset="${(arcLen*(1-f)).toFixed(2)}"/>`
+    +`<line class="ndl" x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke-width="${Math.max(1,sw-1.4)}" stroke-linecap="round"/>`
+    +`<circle class="cap" cx="${cx}" cy="${cy}" r="${(sw*0.7).toFixed(2)}"/></svg>`;
+}
 function hypeHtml(g,ph,inline){
   if(!state.showHype || ph!=="final") return "";
   const r=RATINGS[g.id]; if(!r || typeof r.x!=="number") return "";
-  const n=hypeLevel(r.x), label=hypeTier(r.t);
-  const word=r.t==="must"?"Must-watch":r.t==="good"?"Worth it":"Low-key";
-  const bars=[1,2,3,4,5].map(i=>`<i class="${i<=n?"on":""}"></i>`).join("");
-  const title=`Hype ${word} · ${r.x}/100`;   // score only — no spoiler-y tags
-  return `<span class="hype ${label}${inline?" inline":""}" title="${esc(title)}" aria-label="${esc(title)}">${bars}</span>`;
+  const label=hypeTier(r.t), word=hypeWord(r.t);
+  const aria=`Hype ${word}, ${r.x} out of 100`;
+  return `<span class="hype ${label}" tabindex="0" role="img" aria-label="${esc(aria)}" `
+    +`data-hx="${r.x}" data-hw="${esc(word)}" data-ht="${label}">${gaugeSvg(r.x,{w:30,r:11,sw:3})}</span>`;
+}
+/* One shared popover, shown on hover (mouse) or tap/focus (touch/keyboard). */
+let _htip=null, _htipFor=null;
+function hideHypeTip(){ if(_htip){ _htip.classList.remove("show"); } _htipFor=null; }
+function showHypeTip(el){
+  if(!_htip){ _htip=document.createElement("div"); _htip.className="hypetip"; _htip.setAttribute("role","tooltip"); document.body.appendChild(_htip); }
+  const x=el.getAttribute("data-hx"), word=el.getAttribute("data-hw"), t=el.getAttribute("data-ht");
+  _htip.className="hypetip "+t;
+  _htip.innerHTML=`<div class="lead">Hype</div>${gaugeSvg(+x,{w:76,r:32,sw:6})}`
+    +`<div class="num">${x}<small>/100</small></div><div class="word">${esc(word)}</div>`;
+  _htip.classList.add("show");
+  const r=el.getBoundingClientRect(), tr=_htip.getBoundingClientRect();
+  let left=r.left+r.width/2-tr.width/2;
+  left=Math.max(8, Math.min(left, innerWidth-tr.width-8));
+  let top=r.top-tr.height-8;
+  if(top<6) top=r.bottom+8;                        // flip below if no room above
+  _htip.style.left=left+"px"; _htip.style.top=top+"px";
+  _htipFor=el;
+}
+function initHypeTip(){
+  const onEnter=e=>{ const el=e.target.closest&&e.target.closest(".hype"); if(el) showHypeTip(el); };
+  const onLeave=e=>{ const el=e.target.closest&&e.target.closest(".hype"); if(el && el===_htipFor) hideHypeTip(); };
+  document.addEventListener("pointerover",onEnter);
+  document.addEventListener("pointerout",onLeave);
+  document.addEventListener("focusin",e=>{ const el=e.target.closest&&e.target.closest(".hype"); if(el) showHypeTip(el); });
+  document.addEventListener("focusout",e=>{ const el=e.target.closest&&e.target.closest(".hype"); if(el) hideHypeTip(); });
+  // touch: tapping the gauge toggles the card without opening the game row
+  document.addEventListener("click",e=>{ const el=e.target.closest&&e.target.closest(".hype");
+    if(el){ e.stopPropagation(); if(_htipFor===el) hideHypeTip(); else showHypeTip(el); } else hideHypeTip(); }, true);
+  window.addEventListener("scroll",hideHypeTip,{passive:true});
+  window.addEventListener("resize",hideHypeTip);
 }
 async function loadLiveSchedule(){
   try{
@@ -3484,6 +3538,7 @@ function init(){
   updatePreseasonTab();
   loadLiveSchedule();            // replace the embedded snapshot with the live schedule.json
   loadRatings();                 // spoiler-light excitement meter (optional)
+  initHypeTip();
   loadLogos();
   initAuthUI();
   initStore();
