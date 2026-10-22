@@ -200,8 +200,9 @@
   .hype i:nth-child(4){height:10px} .hype i:nth-child(5){height:12px}
   .hype i.on{background:currentColor}
   .hype.t-skip{color:var(--faint)} .hype.t-good{color:var(--fg)} .hype.t-must{color:var(--accent)}
-  .hype.inline{height:10px; margin:0 0 0 8px}
+  .hype.inline{height:10px; margin:0}
   .hype.inline i:nth-child(5){height:11px}
+  .scorewrap{display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0}
 
   /* stats */
   .sumline{display:flex; flex-wrap:wrap; gap:6px 22px; margin:16px 0 4px; font-size:12.5px; color:var(--muted)}
@@ -1968,9 +1969,8 @@ function hypeHtml(g,ph,inline){
   const r=RATINGS[g.id]; if(!r || typeof r.x!=="number") return "";
   const n=hypeLevel(r.x), label=hypeTier(r.t);
   const word=r.t==="must"?"Must-watch":r.t==="good"?"Worth it":"Low-key";
-  const tags=Array.isArray(r.tags)&&r.tags.length?" · "+r.tags.join(" · "):"";
   const bars=[1,2,3,4,5].map(i=>`<i class="${i<=n?"on":""}"></i>`).join("");
-  const title=`Hype ${word} · ${r.x}/100${tags}`;
+  const title=`Hype ${word} · ${r.x}/100`;   // score only — no spoiler-y tags
   return `<span class="hype ${label}${inline?" inline":""}" title="${esc(title)}" aria-label="${esc(title)}">${bars}</span>`;
 }
 async function loadLiveSchedule(){
@@ -2779,11 +2779,10 @@ function gameRow(g,now,opts){
   const on=state.watched.has(g.id), c=on&&state.condensed.has(g.id);
   const ph=phase(g,now);
   const st=ph==="final"?`<span class="st">Final</span>`:ph==="live"?`<span class="st live">Live</span>`:"";
-  const hype=hypeHtml(g,ph,false);
   return `<div class="game${on?" watched":""}${c?" condensed":""}${ph==="final"?" done":""}" data-id="${g.id}" tabindex="0" role="checkbox" aria-checked="${on}">
-    <span class="time">${timeLabel(g.ms,state.region)}${opts.usDay?`<span class="ld${dateKey(g.ms,state.region)!==opts.usDay?" next":""}">${localDateLabel(g.ms,state.region)}</span>`:""}${st}${hype}</span>
+    <span class="time">${timeLabel(g.ms,state.region)}${opts.usDay?`<span class="ld${dateKey(g.ms,state.region)!==opts.usDay?" next":""}">${localDateLabel(g.ms,state.region)}</span>`:""}${st}</span>
     <span class="match"><span class="tm">${logo(g.away)}${short(g.away)}</span><span class="at">@</span><span class="tm home">${logo(g.home)}${short(g.home)}</span></span>
-    ${scoreCell(g,ph)}
+    <span class="scorewrap">${hypeHtml(g,ph,true)}${scoreCell(g,ph)}</span>
     <span class="mark" title="${markTitle(on,c)}"><span class="ctag" aria-hidden="true">C</span><span class="box" aria-hidden="true"></span></span>
   </div>`;
 }
