@@ -3213,8 +3213,8 @@ function toast(msg){
 /* ---------- stats ---------- */
 function renderStats(){
   const s=tally(), bs=badgeState();
-  const n=regularGames().length;
-  const pct=n?((s.total/n)*100).toFixed(1):"0.0";
+  const played=playedCount();
+  const pct=played?Math.min(100,(s.total/played)*100).toFixed(1):"0.0";   // of games played so far, not all scheduled
   const got=BADGES.filter(b=>bs[b.id].done).length;
   const badges=BADGES.map(b=>{ const st=bs[b.id];
     return `<div class="badge${st.done?" on":""}" title="${b.desc}">
@@ -3248,7 +3248,7 @@ function renderStats(){
     const cond=regularGames().filter(g=>state.watched.has(g.id)&&state.condensed.has(g.id)).length;
     html=`<div class="sumline">
         <span><b>${s.total}</b>games watched${cond?`<em class="split">(${s.total-cond} full &middot; ${cond} condensed)</em>`:""}</span>
-        <span><b>${pct}%</b>of the season</span>
+        <span><b>${pct}%</b>of games played so far</span>
         <span><b>${s.seen}<span style="font-size:13px;color:var(--muted);font-weight:400">/30</span></b>teams seen</span>
       </div>
       ${badgeSec}
@@ -3350,9 +3350,9 @@ async function exportStatsPng(btn){
     }
 
     // summary numbers
-    const n=regularGames().length, pct=n?(s.total/n*100).toFixed(1):"0.0";
+    const played=playedCount(), pct=played?Math.min(100,s.total/played*100).toFixed(1):"0.0";
     let sx=PAD; const sy=PAD+144;
-    for(const [num,lab] of [[String(s.total),"games watched"],[pct+"%","of the season"],[s.seen+"/30","teams seen"]]){
+    for(const [num,lab] of [[String(s.total),"games watched"],[pct+"%","of games played"],[s.seen+"/30","teams seen"]]){
       x.fillStyle=fg; x.font=`600 40px ${F}`; x.fillText(num,sx,sy); sx+=x.measureText(num).width+10;
       x.fillStyle=muted; x.font=`400 18px ${F}`; x.fillText(lab,sx,sy); sx+=x.measureText(lab).width+40;
     }
@@ -3434,6 +3434,9 @@ function isPreseason(g){
   return g.ms < _regStartMs;
 }
 function regularGames(){ return state.games.filter(g=>!isPreseason(g)); }
+/* Regular-season games that have actually been played (finished) up to now —
+   the denominator for "% of the season". */
+function playedCount(){ const now=Date.now(); let p=0; for(const g of regularGames()) if(phase(g,now)==="final") p++; return p; }
 function viewGames(){
   if(state.view==="preseason") return state.games.filter(isPreseason);
   return regularGames();
