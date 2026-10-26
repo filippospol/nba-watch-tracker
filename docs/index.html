@@ -2858,10 +2858,10 @@ function dayCount(n){ return n+(n===1?" game":" games"); }
 
 /* Build day-blocks as an array (one HTML string per day), dropping the "Upcoming" rule
    before the first unfinished game when finished games sit above it in the list. */
-function dayBlocksArr(keys,groups,filter){
+function dayBlocksArr(keys,groups,filter,minMs){
   const now=Date.now(); const blocks=[]; let sawDone=false, placed=false, any=false;
   for(const k of keys){
-    const gs=(groups.get(k)||[]).filter(filter);
+    const gs=(groups.get(k)||[]).filter(g=>filter(g) && (!minMs || g.ms>=minMs));
     if(!gs.length) continue; any=true;
     const head=`<div class="dayhead" data-dk="${k}"><span>${dayLabel(gs[0].ms,state.region)}</span><span class="cnt">${dayCount(gs.length)}</span></div>`;
     let pre="", rows="";
@@ -2972,7 +2972,9 @@ function renderList(){
       <input type="text" id="f-s" placeholder="Find a team" aria-label="Find a team" value="${state.search.replace(/"/g,"&quot;")}">
     </div>`;
 
-  const lastKey=lastPlayedKey(groups);
+  const lastKey=lastPlayedKey(groups);           // latest LOCAL day with a final — picks the opening month
+  const cut=lastNightCutoff(groups);             // the first game of the most recent NBA (US) night
+  const anchorKey=cut?dateKey(cut.ms,state.region):lastKey;
   let top="", listKeys;
   if(teamMode){
     // Team picked: header on top, month/day strips hidden, whole season listed.
@@ -3012,22 +3014,24 @@ function renderList(){
 
   // Fold away the days before the latest game day (one tap shows them again).
   // Not when a single day, a team, or a filter/search is picked — then everything stays visible.
-  let fold=null;
-  if(!teamMode && !state.day && state.wfilter==="all" && !state.search && lastKey && listKeys.includes(lastKey)){
-    const before=listKeys.filter(k=>k<lastKey && (groups.get(k)||[]).some(passes));
-    if(before.length){
-      const n=before.reduce((t,k)=>t+groups.get(k).filter(passes).length,0);
+  let fold=null, cutMs=0;
+  if(!teamMode && !state.day && state.wfilter==="all" && !state.search && cut && listKeys.includes(anchorKey)){
+    // games before the cutoff — whole earlier days, plus the pre-cutoff part of the anchor day
+    let beforeN=0; const beforeDays=new Set();
+    for(const k of listKeys){ for(const g of (groups.get(k)||[])){ if(passes(g) && g.ms<cut.ms){ beforeN++; beforeDays.add(k); } } }
+    if(beforeN){
       const fkey=state.view+"|"+state.month;
       const open=state.earlierOpen===fkey;
-      if(!open) listKeys=listKeys.filter(k=>k>=lastKey);
-      fold={ key:fkey, open, last:lastKey,
+      if(!open){ listKeys=listKeys.filter(k=>k>=anchorKey); cutMs=cut.ms; }   // drop earlier days; trim the anchor day
+      const dN=beforeDays.size;
+      fold={ key:fkey, open, cutId:cut.id,
         html:`<button class="earlier${open?" open":""}" id="f-earlier" type="button" aria-expanded="${open}">`
-            +`<span class="arr" aria-hidden="true">&#9656;</span>${open?"Hide":"Show"} ${before.length} earlier ${before.length===1?"day":"days"}`
-            +`<span class="sub">${n} ${n===1?"game":"games"}</span></button>` };
+            +`<span class="arr" aria-hidden="true">&#9656;</span>${open?"Hide":"Show"} earlier games`
+            +`<span class="sub">${dN} ${dN===1?"day":"days"} &middot; ${beforeN} ${beforeN===1?"game":"games"}</span></button>` };
     }
   }
 
-  const {blocks,any}=dayBlocksArr(listKeys,groups,passes);
+  const {blocks,any}=dayBlocksArr(listKeys,groups,passes,cutMs);
   v.innerHTML = top + `<div class="gamelist" id="gamelist"></div>` + (any?``:`<div class="empty">Nothing matches.</div>`);
 
   v.querySelectorAll(".months button").forEach(b=>b.onclick=()=>{ state.month=b.dataset.m; state.day=null; render(); });
@@ -3054,6 +3058,23 @@ function lastPlayedKey(groups){
   for(let i=keys.length-1;i>=0;i--) if(groups.get(keys[i]).some(g=>phase(g,now)==="final")) return keys[i];
   return null;
 }
+/* An NBA night (one US game day) can straddle your local midnight: early US games land on
+   your evening, late ones on your next morning. For the opening view we anchor to the
+   EARLIEST local day that holds a game from the most recent *finished* NBA night, so last
+   night's whole slate is visible even though the day headers stay in your local dates. */
+function lastNightCutoff(groups){
+  const now=Date.now();
+  let lastUS=null;                                   // most recent US date with a finished game
+  for(const gs of groups.values()) for(const g of gs){
+    if(phase(g,now)==="final"){ const u=dateKey(g.ms,US_TZ); if(lastUS===null||u>lastUS) lastUS=u; }
+  }
+  if(lastUS===null) return null;
+  let best=null;                                     // the earliest game of that NBA night
+  for(const gs of groups.values()) for(const g of gs){
+    if(dateKey(g.ms,US_TZ)===lastUS && (best===null||g.ms<best.ms)) best=g;
+  }
+  return best ? {ms:best.ms, id:best.id} : null;
+}
 /* Folded: the bar sits at the top of the list. Open: it sits between the earlier days and the
    latest game day, so the earlier days appear right where you tapped. */
 function placeFold(list,fold){
@@ -3061,11 +3082,17 @@ function placeFold(list,fold){
   const tmp=document.createElement("div"); tmp.innerHTML=fold.html; const bar=tmp.firstElementChild;
   if(!fold.open){ list.prepend(bar); }
   else{
-    const find=()=>list.querySelector(`.dayhead[data-dk="${fold.last}"]`);
-    let h=find(), guard=0;
-    while(!h && !_lazyDone && _lazyMore && guard++<400){ _lazyMore(); h=find(); }   // whole-season list loads lazily
-    if(!h){ list.prepend(bar); }
-    else{ const prev=h.previousElementSibling; list.insertBefore(bar, (prev && prev.classList.contains("nowline")) ? prev : h); }
+    const sel=(window.CSS&&CSS.escape)?CSS.escape(fold.cutId):fold.cutId;
+    const find=()=>list.querySelector(`.game[data-id="${sel}"]`);
+    let el=find(), guard=0;
+    while(!el && !_lazyDone && _lazyMore && guard++<400){ _lazyMore(); el=find(); }   // whole-season list loads lazily
+    if(!el){ list.prepend(bar); }
+    else{
+      const ps=el.previousElementSibling;
+      const target=(ps && ps.classList.contains("dayhead")) ? ps : el;   // first of its day -> before the header
+      const prev=target.previousElementSibling;
+      list.insertBefore(bar, (prev && prev.classList.contains("nowline")) ? prev : target);
+    }
   }
   bar.onclick=()=>{
     const y0=bar.getBoundingClientRect().top;
