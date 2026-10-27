@@ -353,6 +353,11 @@ def main():
     added = 0
     for d in sorted(set(dates)):
         for ev in _finished_events(d):
+            # A finished game's rating never changes, so skip ones already rated —
+            # this keeps the live watcher's repeated polls cheap (no summary re-fetch).
+            gid0, _ot = _identity_from_event(ev)
+            if gid0 and isinstance(ratings.get(gid0), dict) and "x" in ratings[gid0]:
+                continue
             try:
                 r = rate_event(ev, debug=debug)
             except Exception as exc:  # noqa: BLE001
