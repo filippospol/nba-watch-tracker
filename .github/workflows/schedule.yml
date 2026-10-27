@@ -1,16 +1,20 @@
 name: Update NBA Schedule
 
+# Backstop only. The live watcher keeps scores current through the night; this
+# rebuilds the WHOLE season once each morning to catch schedule changes (new NBA
+# Cup games, postponements) and anything the watcher missed.
 on:
   schedule:
-    # Every 2 hours from midnight to 08:00 Greek time (00:00, 02:00, 04:00, 06:00, 08:00),
-    # while NBA games are being played and finishing. The time zone handles summer/winter
-    # time automatically. GitHub can start scheduled runs a little late when it's busy.
-    - cron: "0 0-8/2 * * *"
+    - cron: "30 9 * * *"         # 09:30 Greek — after the watcher has finished
       timezone: "Europe/Athens"
-  workflow_dispatch:           # also run on demand from the Actions tab
+  workflow_dispatch:
 
 permissions:
-  contents: write              # allow the job to commit schedule.json back
+  contents: write
+
+concurrency:
+  group: data-updates
+  cancel-in-progress: false
 
 jobs:
   schedule:
@@ -34,6 +38,6 @@ jobs:
             echo "No schedule changes."
           else
             git commit -m "Update schedule.json"
-            git pull --rebase
+            git pull --rebase --autostash
             git push
           fi
