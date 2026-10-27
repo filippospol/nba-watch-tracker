@@ -1,19 +1,19 @@
 name: Update Excitement Ratings
 
+# Backstop only. The live watcher already rates games as they finish; this runs
+# once each morning to pick up any rating whose win-probability was published
+# late, and to fill gaps if the watcher was delayed.
 on:
   schedule:
-    # 20 minutes after each schedule refresh (00:20–08:20 Greek time), so final
-    # scores and win-probability are published before we rate the games.
-    - cron: "20 0-8/2 * * *"
+    - cron: "50 9 * * *"         # 09:50 Greek — just after the schedule backstop
       timezone: "Europe/Athens"
-  workflow_dispatch:           # also run on demand from the Actions tab
+  workflow_dispatch:
 
 permissions:
-  contents: write              # allow the job to commit ratings.json back
+  contents: write
 
-# Don't let two runs push at once.
 concurrency:
-  group: excitement
+  group: data-updates
   cancel-in-progress: false
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
           python-version: "3.12"
 
       - name: Rate recently finished games
-        run: python scripts/excitement.py          # last few days by default
+        run: python scripts/excitement.py
 
       - name: Commit if changed
         run: |
@@ -38,6 +38,6 @@ jobs:
             echo "No ratings changes."
           else
             git commit -m "Update ratings.json"
-            git pull --rebase
+            git pull --rebase --autostash
             git push
           fi
