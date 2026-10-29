@@ -32,7 +32,11 @@ jobs:
       - name: Poll ESPN and commit as games finish
         env:
           POLL_SECONDS: "300"    # check every 5 minutes
-          MAX_MINUTES: "330"     # stop after ~5.5h even if ESPN never says "done"
+          # A real NBA night runs ~5h (first tip ~19:00 ET to the last West-coast
+          # final ~01:30 ET), so this is sized to cover a full night — not an idle
+          # timer. It should rarely bite now that the watcher stops as soon as
+          # nothing is live or about to tip (see live_update.py PENDING).
+          MAX_MINUTES: "330"
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
