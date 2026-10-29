@@ -1,0 +1,16 @@
+{
+  "name": "NBA Watch Tracker",
+  "short_name": "Watch Tracker",
+  "description": "Log the NBA games you've watched — spoiler-free, in your time zone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#121214",
+  "theme_color": "#121214",
+  "icons": [
+    { "src": "icon-192.png",      "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon.png",          "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="icon" type="image/png" id="favicon" href="icon.png"><link rel="apple-touch-icon" href="icon.png"><meta name="theme-color" content="#121212"><title>NBA Watch Tracker</title><meta name="description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><link rel="canonical" href="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:type" content="website"><meta property="og:site_name" content="NBA Watch Tracker"><meta property="og:title" content="NBA Watch Tracker"><meta property="og:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta property="og:url" content="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"><meta property="og:image:width" content="512"><meta property="og:image:height" content="512"><meta property="og:image:alt" content="NBA Watch Tracker logo"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="NBA Watch Tracker"><meta name="twitter:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta name="twitter:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"></head><body>
+<!doctype html><html lang="en"><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="icon" type="image/png" id="favicon" href="icon.png"><link rel="apple-touch-icon" href="icon.png"><meta name="theme-color" content="#121212"><title>NBA Watch Tracker</title><meta name="description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><link rel="canonical" href="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:type" content="website"><meta property="og:site_name" content="NBA Watch Tracker"><meta property="og:title" content="NBA Watch Tracker"><meta property="og:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta property="og:url" content="https://filippospol.github.io/nba-watch-tracker/"><meta property="og:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"><meta property="og:image:width" content="512"><meta property="og:image:height" content="512"><meta property="og:image:alt" content="NBA Watch Tracker logo"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="NBA Watch Tracker"><meta name="twitter:description" content="Log the NBA games you've watched and keep a running record of your season. Scores stay hidden until you reveal them, tip-offs show in your own time zone, and your stats build up as you go."><meta name="twitter:image" content="https://filippospol.github.io/nba-watch-tracker/icon.png"><link rel="manifest" href="manifest.json"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Watch Tracker"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" sizes="192x192" href="icon-192.png"><script>if("serviceWorker" in navigator){addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}</script></head><body>
 <style>
   :root{
     box-sizing:border-box;
@@ -326,11 +326,12 @@
   .allbar .link{border:0; background:none; color:var(--accent); text-decoration:underline; text-underline-offset:2px; cursor:pointer; padding:0; font-weight:500}
   .allbar .link:hover{color:var(--fg)}
   /* floating back-to-top button (appears once you've scrolled) */
-  .totop{position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom,0px)); z-index:40;
-    background:var(--fg); color:var(--bg); border:0; padding:8px 13px; font-size:12px; font-weight:500; cursor:pointer;
+  .fabs{position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom,0px)); z-index:40; display:flex; gap:8px; align-items:flex-end}
+  .fab{background:var(--fg); color:var(--bg); border:0; padding:8px 13px; font-size:12px; font-weight:500; cursor:pointer;
     box-shadow:0 4px 14px rgba(0,0,0,.22); opacity:0; transform:translateY(8px); pointer-events:none; transition:opacity .2s ease, transform .2s ease}
-  .totop.show{opacity:1; transform:none; pointer-events:auto}
-  @media (prefers-reduced-motion: reduce){ .totop{transition:none} }
+  .fab.show{opacity:1; transform:none; pointer-events:auto}
+  .fab.latest{background:var(--accent); color:#fff}
+  @media (prefers-reduced-motion: reduce){ .fab{transition:none} }
   .brand .kicker::before{display:none}
   .topright{display:flex; align-items:flex-start; gap:12px}
   .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
@@ -420,7 +421,10 @@
     <div id="logincontent"></div>
   </div>
 </div>
-<button class="totop" id="totop" type="button" aria-label="Back to top">&uarr; Top</button>
+<div class="fabs">
+  <button class="fab latest" id="tolatest" type="button" aria-label="Go to the latest games">Latest &uarr;</button>
+  <button class="fab" id="totop" type="button" aria-label="Back to top">&uarr; Top</button>
+</div>
 <script>
 "use strict";
 /* ---------- regions (country -> IANA timezone; GMT offset shown live) ---------- */
@@ -2973,6 +2977,7 @@ function renderList(){
     </div>`;
 
   const lastKey=lastPlayedKey(groups);           // latest LOCAL day with a final — picks the opening month
+  _latestMonth = lastKey ? lastKey.slice(0,7) : null;   // for the "Latest" button
   const cut=lastNightCutoff(groups);             // the first game of the most recent NBA (US) night
   const anchorKey=cut?dateKey(cut.ms,state.region):lastKey;
   let top="", listKeys;
@@ -3473,6 +3478,7 @@ function render(){
   if(state.view==="list"||state.view==="preseason") renderList();
   else if(state.view==="calendar") renderCalendar();
   else renderStats();
+  updateLatestBtn();
 }
 function setView(v){
   state.view=v;
@@ -3524,11 +3530,43 @@ function initTheme(){
 }
 
 /* ---------- floating back-to-top ---------- */
+let _latestMonth=null;
+/* You're "at the latest" when the schedule is in its default state — latest month,
+   no team / day / search / filter narrowing it down. (Scroll position doesn't matter;
+   the red NOW line is the live edge you land on.) */
+function atLatest(){
+  return (state.view==="list"||state.view==="preseason") && !state.team && !state.day && !state.search
+      && state.wfilter==="all"
+      && (state.month===_latestMonth || state.month===null);
+}
+function updateLatestBtn(){
+  const b=document.getElementById("tolatest"); if(!b) return;
+  const inScope = state.view==="list" || state.view==="preseason" || state.view==="calendar";
+  b.classList.toggle("show", inScope && !atLatest());
+}
+/* Jump back to the most recent games from anywhere — reset the schedule to its
+   default (latest) view and scroll to the red NOW line (the live edge), so the
+   newest results sit right above it. */
+function goToLatest(){
+  state.team=""; state.day=null; state.month=null; state.search=""; state.wfilter="all"; _statOpen=null;
+  if(state.view!=="list") setView("list"); else render();
+  requestAnimationFrame(()=>{
+    const list=document.getElementById("gamelist");
+    const now=list && list.querySelector(".nowline");
+    if(now) now.scrollIntoView({block:"center", behavior:"smooth"});
+    else{
+      const h=list && list.querySelector(".dayhead[data-dk]");
+      if(h) h.scrollIntoView({block:"start", behavior:"smooth"}); else window.scrollTo({top:0, behavior:"smooth"});
+    }
+    updateLatestBtn();
+  });
+}
 function initToTop(){
-  const btn=document.getElementById("totop");
-  if(!btn) return;
-  btn.onclick=()=>window.scrollTo({top:0, behavior:"smooth"});
-  const onScroll=()=>btn.classList.toggle("show", window.scrollY>500);
+  const top=document.getElementById("totop");
+  const latest=document.getElementById("tolatest");
+  if(top) top.onclick=()=>window.scrollTo({top:0, behavior:"smooth"});
+  if(latest) latest.onclick=goToLatest;
+  const onScroll=()=>{ if(top) top.classList.toggle("show", window.scrollY>500); updateLatestBtn(); };
   window.addEventListener("scroll", onScroll, {passive:true});
   onScroll();
 }
