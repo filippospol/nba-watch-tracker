@@ -3536,7 +3536,7 @@ let _latestMonth=null;
    the red NOW line is the live edge you land on.) */
 function atLatest(){
   return (state.view==="list"||state.view==="preseason") && !state.team && !state.day && !state.search
-      && state.wfilter==="all"
+      && state.wfilter==="all" && !state.earlierOpen           // earlier games expanded -> offer the way back
       && (state.month===_latestMonth || state.month===null);
 }
 function updateLatestBtn(){
@@ -3548,7 +3548,7 @@ function updateLatestBtn(){
    default (latest) view and scroll to the red NOW line (the live edge), so the
    newest results sit right above it. */
 function goToLatest(){
-  state.team=""; state.day=null; state.month=null; state.search=""; state.wfilter="all"; _statOpen=null;
+  state.team=""; state.day=null; state.month=null; state.search=""; state.wfilter="all"; state.earlierOpen=null; _statOpen=null;
   if(state.view!=="list") setView("list"); else render();
   requestAnimationFrame(()=>{
     const list=document.getElementById("gamelist");
