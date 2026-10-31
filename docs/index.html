@@ -330,8 +330,17 @@
   .fab{background:var(--fg); color:var(--bg); border:0; padding:8px 13px; font-size:12px; font-weight:500; cursor:pointer;
     box-shadow:0 4px 14px rgba(0,0,0,.22); opacity:0; transform:translateY(8px); pointer-events:none; transition:opacity .2s ease, transform .2s ease}
   .fab.show{opacity:1; transform:none; pointer-events:auto}
-  .fab.latest{background:var(--accent); color:#fff}
   @media (prefers-reduced-motion: reduce){ .fab{transition:none} }
+  /* "Latest games" pill: slides in at the top (under the frozen header) as you scroll down */
+  .jumplatest{position:fixed; left:50%; top:64px; z-index:30; transform:translateX(-50%) translateY(-10px);
+    display:inline-flex; align-items:center; gap:6px; background:var(--accent); color:#fff; border:0;
+    padding:7px 15px 7px 13px; font-size:12.5px; font-weight:600; border-radius:999px; cursor:pointer;
+    box-shadow:0 6px 18px -6px rgba(0,0,0,.45); opacity:0; pointer-events:none;
+    transition:opacity .2s ease, transform .2s ease}
+  .jumplatest.show{opacity:1; transform:translateX(-50%); pointer-events:auto}
+  .jumplatest:hover{filter:brightness(1.06)}
+  .jumplatest .arr{font-size:12px; line-height:1}
+  @media (prefers-reduced-motion: reduce){ .jumplatest{transition:none} }
   .brand .kicker::before{display:none}
   .topright{display:flex; align-items:flex-start; gap:12px}
   .themebtn{display:inline-flex; align-items:center; justify-content:center; width:30px; height:26px; padding:0; color:var(--muted)}
@@ -421,8 +430,8 @@
     <div id="logincontent"></div>
   </div>
 </div>
+<button class="jumplatest" id="tolatest" type="button" aria-label="Go to the latest games"><span class="arr" aria-hidden="true">&uarr;</span> Latest games</button>
 <div class="fabs">
-  <button class="fab latest" id="tolatest" type="button" aria-label="Go to the latest games">Latest &uarr;</button>
   <button class="fab" id="totop" type="button" aria-label="Back to top">&uarr; Top</button>
 </div>
 <script>
@@ -3542,7 +3551,13 @@ function atLatest(){
 function updateLatestBtn(){
   const b=document.getElementById("tolatest"); if(!b) return;
   const inScope = state.view==="list" || state.view==="preseason" || state.view==="calendar";
-  b.classList.toggle("show", inScope && !atLatest());
+  const tb=document.querySelector(".topbar");
+  // Shows at the top once you've scrolled down the games (header has slimmed) and there's a
+  // latest night to return to — e.g. after expanding earlier games. Sits under the header.
+  const scrolled = (tb && tb.classList.contains("compact")) || window.scrollY>240;
+  const show = inScope && !atLatest() && scrolled;
+  if(show && tb) b.style.top=(Math.max(0,tb.getBoundingClientRect().bottom)+8)+"px";
+  b.classList.toggle("show", show);
 }
 /* Jump back to the most recent games from anywhere — reset the schedule to its
    default (latest) view and scroll to the red NOW line (the live edge), so the
@@ -3598,8 +3613,8 @@ function initHeader(){
 
 function init(){
   initTheme();
+  initHeader();       // before initToTop so the header's compact state is set before the pill measures it
   initToTop();
-  initHeader();
   buildRegion();
   state.seed=loadSeed(); rebuildGames();
   setView(preseasonLive() ? "preseason" : "list"); setStatus();
