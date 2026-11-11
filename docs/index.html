@@ -2040,17 +2040,45 @@ function initHypeTip(){
   window.addEventListener("scroll",hideHypeTip,{passive:true});
   window.addEventListener("resize",hideHypeTip);
 }
+let _liveSig="";   // raw text of the last schedule we applied, to skip re-rendering when nothing changed
 async function loadLiveSchedule(){
   try{
     const res = await fetch(SCHEDULE_URL, { cache:"no-cache" });
     if(!res.ok) return;
-    const rows = await res.json();
+    const txt = await res.text();
+    const rows = JSON.parse(txt);
     if(!Array.isArray(rows) || !rows.length || !Array.isArray(rows[0])) return;
+    _liveSig = txt;
     state.seed = rowsToSeed(rows);
     rebuildGames(); updatePreseasonTab(); setStatus(); render();
   }catch(e){ /* offline or blocked -> keep the embedded snapshot */ }
 }
-const NEAR=36*3600e3;
+/* Re-fetch the live schedule while the app is open, so new final scores appear without a reload.
+   Throttled, and only re-renders when the file actually changed. Ratings refresh alongside it. */
+let _lastLive=0;
+async function refreshLive(){
+  if(Date.now()-_lastLive < 60000) return;      // at most once a minute
+  _lastLive=Date.now();
+  try{
+    const res=await fetch(SCHEDULE_URL,{cache:"no-cache"});
+    if(res.ok){
+      const txt=await res.text();
+      if(txt!==_liveSig){
+        const rows=JSON.parse(txt);
+        if(Array.isArray(rows) && rows.length && Array.isArray(rows[0])){
+          _liveSig=txt; state.seed=rowsToSeed(rows);
+          rebuildGames(); updatePreseasonTab(); setStatus(); render();
+        }
+      }
+    }
+  }catch(e){ /* keep whatever we have */ }
+  loadRatings();                                 // refresh the hype meter too (re-renders only if it's on)
+}
+// Tolerance for matching a final score to its scheduled game. Must stay well under a day:
+// the same matchup can repeat on back-to-back nights (~22h+ apart), and a window that wide
+// would let last night's final bleed onto tonight's unplayed game of the same two teams.
+// A correct score and its game share the same ET wall time, so a few hours is ample slack.
+const NEAR=8*3600e3;
 function findIn(list,ms){ return (list||[]).find(x=>Math.abs(x.ms-ms)<NEAR); }
 
 /* scores docs: scores/<YYYY-MM-DD> {games:[{utc, away, home, status, as, hs}], updatedAt} */
@@ -2514,6 +2542,11 @@ const IDLE_MS=10*60000;
   const wasIdle=Date.now()-lastActive>IDLE_MS; lastActive=Date.now(); if(wasIdle) pullSoon();
 },{passive:true}));
 setInterval(()=>{ if(document.visibilityState==="visible" && Date.now()-lastActive<IDLE_MS) pullSoon(); }, 90000);
+/* Live scores refresh independently of account sync (they're public), so finals show up for
+   signed-out users too, on focus/return and on a gentle interval while the app is in use. */
+["focus","pageshow"].forEach(ev=>window.addEventListener(ev, ()=>refreshLive()));
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshLive(); });
+setInterval(()=>{ if(document.visibilityState==="visible" && Date.now()-lastActive<IDLE_MS) refreshLive(); }, 90000);
 
 /* ---------- account button + dedicated login screen (email + password) ---------- */
 function updateAccountBtn(){
