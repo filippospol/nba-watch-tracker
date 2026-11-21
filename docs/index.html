@@ -1840,14 +1840,24 @@ const SEED = [
 ];
 
 /* ---------- time helpers ---------- */
-// US Eastern DST ends 2026-11-01 02:00 local. Before => EDT(UTC-4), on/after => EST(UTC-5).
-const DST_END = Date.UTC(2026,10,1,2,0);
+// US Eastern is EDT (UTC-4) from the 2nd Sunday of March 02:00 to the 1st Sunday
+// of November 02:00, and EST (UTC-5) the rest of the year. Computed per-year so a
+// season that crosses both the autumn fall-back and the spring forward is handled
+// (a single fixed boundary left spring games an hour late and broke their game id).
+function _nthSundayUTC(year,monthIdx,n){            // n=1 -> 1st Sunday, n=2 -> 2nd
+  const first=1+((7-new Date(Date.UTC(year,monthIdx,1)).getUTCDay())%7);
+  return Date.UTC(year,monthIdx,first+(n-1)*7,2,0);
+}
+function _etOffset(naive){                          // 4 (EDT) or 5 (EST) for a naive ET instant
+  const y=new Date(naive).getUTCFullYear();
+  return (naive>=_nthSundayUTC(y,2,2) && naive<_nthSundayUTC(y,10,1))?4:5;
+}
 function etWallToUTCms(wall){
   const [d,t]=wall.split(" ");
   const [y,mo,da]=d.split("-").map(Number);
   const [h,mi]=t.split(":").map(Number);
   const naive=Date.UTC(y,mo-1,da,h,mi);
-  const off=naive<DST_END?4:5;
+  const off=_etOffset(naive);
   return Date.UTC(y,mo-1,da,h+off,mi);
 }
 function gameId(utcMs,away,home){
