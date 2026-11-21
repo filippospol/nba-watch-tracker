@@ -24,18 +24,31 @@ from espn import NAME2TRI, canonical_name
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Mirror the app's constants/logic (docs/index.html) EXACTLY so the key we build
+# Mirror the app's logic (docs/index.html etWallToUTCms) EXACTLY so the key we build
 # here is byte-for-byte the one the browser builds from the same schedule row.
-DST_END_MS = int(datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc).timestamp() * 1000)  # Date.UTC(2026,10,1,2,0)
+# US Eastern: EDT (UTC-4) from the 2nd Sunday of March 02:00 to the 1st Sunday of
+# November 02:00, else EST (UTC-5) — computed per year.
 ABBR = dict(NAME2TRI)
+
+
+def _nth_sunday(year: int, month: int, n: int) -> datetime:
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    # weekday(): Mon=0..Sun=6 -> days to first Sunday
+    first_sun = 1 + ((6 - first.weekday()) % 7)
+    return datetime(year, month, first_sun + (n - 1) * 7, 2, 0, tzinfo=timezone.utc)
+
+
+def _et_offset(naive: datetime) -> int:
+    y = naive.year
+    return 4 if (_nth_sunday(y, 3, 2) <= naive < _nth_sunday(y, 11, 1)) else 5
 
 
 def et_wall_to_utc_ms(wall: str) -> int:
     d, t = wall.split(" ")
     y, mo, da = (int(x) for x in d.split("-"))
     h, mi = (int(x) for x in t.split(":"))
-    naive = int(datetime(y, mo, da, h, mi, tzinfo=timezone.utc).timestamp() * 1000)
-    off = 4 if naive < DST_END_MS else 5
+    naive = datetime(y, mo, da, h, mi, tzinfo=timezone.utc)
+    off = _et_offset(naive)
     return int((datetime(y, mo, da, tzinfo=timezone.utc) + timedelta(hours=h + off, minutes=mi)).timestamp() * 1000)
 
 
