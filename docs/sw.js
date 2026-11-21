@@ -3,7 +3,7 @@
    - Cache-first for static assets (logos, icon, fonts) — instant, offline-friendly.
    - Supabase (accounts/sync) is never cached.
    Bump VERSION to force every client onto a fresh cache. */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'nba-wt-' + VERSION;
 
 // Minimal app shell precached on install (the rest fills in as it's used).
@@ -57,7 +57,7 @@ self.addEventListener('fetch', (e) => {
   if (url.hostname.endsWith('.supabase.co')) return;
 
   const isDoc  = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('.html');
-  const isData = /\/(schedule|ratings|logos)\.json$/.test(url.pathname);
+  const isData = /\/(schedule|ratings|logos|gameids)\.json$/.test(url.pathname);
 
   e.respondWith((isDoc || isData) ? networkFirst(req) : cacheFirst(req));
 });
