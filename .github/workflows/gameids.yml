@@ -1,0 +1,44 @@
+name: Update NBA Game IDs
+
+# Maps each matchup to its NBA.com game id so the app can link straight to the
+# game (and League Pass). Game ids rarely change once scheduled; this runs once
+# each morning, alongside the schedule backstop, to pick up newly added games
+# (e.g. NBA Cup) and any schedule changes.
+on:
+  schedule:
+    - cron: "40 9 * * *"         # 09:40 Greek — between the schedule and ratings backstops
+      timezone: "Europe/Athens"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data-updates
+  cancel-in-progress: false
+
+jobs:
+  gameids:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild gameids.json
+        run: python scripts/fetch_gameids.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gameids.json
+          if git diff --cached --quiet; then
+            echo "No game id changes."
+          else
+            git commit -m "Update gameids.json"
+            git pull --rebase --autostash
+            git push
+          fi
