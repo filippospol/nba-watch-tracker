@@ -2,11 +2,15 @@
 """Compute a spoiler-safe "Excitement Index" for finished NBA games from ESPN's
 win-probability feed, and write it to ``ratings.json`` for the app to read.
 
-The index (0-100) is built mainly from the Game Excitement Index idea popularised
-by inpredictable / Yale: add up how much the win probability swings over the game.
-A nail-biter swings constantly; a blowout barely moves. On top of that we fold in a
-few extras that fans feel: how close it still was late ("clutch"), how big a hole the
-winner climbed out of ("comeback"), overtime, and a star's big scoring night.
+The index (0-100) starts from the Game Excitement Index idea popularised by
+inpredictable / Yale: add up how much the win probability swings over the game.
+A nail-biter swings constantly; a blowout barely moves. But win-probability flow
+alone under-rates games that are fun for other reasons, so it's about ~75% of the
+base here, not the whole story. The rest is split between an "action" component
+(how often the lead actually changed hands and the game was tied) and a "stars"
+component (big scoring nights, triple-doubles, several 30-point scorers). On top of
+the base we still add a couple of game-shape bonuses: overtime, and the winner
+climbing out of a deep hole ("comeback").
 
 Nothing about the result is written in a way the app shows to users: only the index
 number, a tier label (Skip / Worth it / Must-watch) and neutral tags. No scores,
@@ -45,12 +49,16 @@ TIER_GOOD = 45      # "Worth it"  (below this -> "Skip")
 #  The index — a pure function so it can be unit-tested without ESPN.
 # ======================================================================
 def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
-               lead_changes=0, debug=False):
+               thirty_plus=0, lead_changes=0, times_tied=0, debug=False):
     """Return (index 0-100, {components}) from a home-win-probability series.
 
     wp : list[float] in [0,1], one per play, in time order (home team's win
          probability). away prob is 1-wp. A game with <8 points is treated as
          having no usable data and returns 0.
+
+    The base blends win-probability flow (~75%) with two box-score components that
+    don't depend on the WP curve: ``action`` (lead_changes + times_tied) at 15% and
+    ``stars`` (top_scorer + triple_double + thirty_plus) at 10%.
     """
     wp = [min(1.0, max(0.0, float(x))) for x in wp if x is not None]
     if len(wp) < 8:
@@ -98,18 +106,36 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
     win_series = wp if winner_home else [1 - p for p in wp]
     comeback = max(0.0, 0.5 - min(win_series)) * 2.0   # 0..1 (down to a near-loss)
 
-    # ---- combine: the GAME ITSELF is ~94% of the score -------------------
-    # Weights sum to 1.0. Win-probability flow (swing + tension + close_time +
-    # finish) is the whole story; comeback is a small flow extra.
+    # 6) ACTION — raw back-and-forth, independent of the WP curve: how often the
+    #    lead actually changed hands and how often the game was tied. A game that
+    #    traded buckets all night rates here even if one side was mildly favored.
+    action = min(1.0,
+                 0.65 * _norm(lead_changes, 2, 20) +
+                 0.35 * _norm(times_tied, 2, 16))
+
+    # 7) STARS — individual brilliance fans tune in for: a big top-scoring night,
+    #    a triple-double, and several 30-point scorers. No longer a token bonus.
+    stars = min(1.0,
+                0.55 * _norm(top_scorer, 22, 50) +
+                0.25 * (1.0 if triple_double else 0.0) +
+                0.20 * _norm(thirty_plus, 1, 4))
+
+    # ---- combine: win-probability flow is ~75% of the base ----------------
+    # Weights sum to 1.0. Flow (swing + tension + close_time + finish + comeback)
+    # is ~0.75; the non-WP components action (0.15) and stars (0.10) make up the rest.
     base = (
-        100.0 * _norm(swing, 1.3, 9.5) * 0.42 +   # total drama (the core GEI)
-        100.0 * tension * 0.18 +                  # how often it was a coin-flip
-        100.0 * close_time * 0.18 +               # close for a long stretch
-        100.0 * finish * 0.16 +                   # clutch-time doubt
-        100.0 * comeback * 0.06
+        100.0 * _norm(swing, 1.3, 9.5) * 0.33 +   # total drama (the core GEI)
+        100.0 * tension * 0.14 +                  # how often it was a coin-flip
+        100.0 * close_time * 0.13 +               # close for a long stretch
+        100.0 * finish * 0.13 +                   # clutch-time doubt
+        100.0 * comeback * 0.02 +                 # winner climbed out of a hole
+        100.0 * action * 0.15 +                   # lead traded hands / ties
+        100.0 * stars * 0.10                      # individual brilliance
     )
 
-    # ---- bonuses: game-shape extras first; player box score barely moves it
+    # ---- bonuses: game-shape extras the base can't fully capture -----------
+    # (lead changes, scoring and triple-doubles now live in the base components
+    #  above, so they're no longer added again here.)
     bonus = 0.0
     if comeback >= 0.85:          # winner was once all but beaten
         bonus += 6
@@ -117,17 +143,6 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
         bonus += 3
     if ot_periods >= 1:
         bonus += 6 + 3 * (ot_periods - 1)         # 2OT, 3OT add more
-    if lead_changes >= 15:
-        bonus += 3
-    elif lead_changes >= 10:
-        bonus += 1
-    # individual performance is deliberately minor (a point or two at most)
-    if top_scorer >= 50:
-        bonus += 2
-    elif top_scorer >= 40:
-        bonus += 1
-    if triple_double:
-        bonus += 1
 
     index = int(round(max(0.0, min(100.0, base + bonus))))
 
@@ -139,11 +154,15 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
         "close_time": round(close_time, 3),
         "finish": round(finish, 3),
         "comeback": round(comeback, 3),
+        "action": round(action, 3),
+        "stars": round(stars, 3),
         "base": round(base, 1),
         "bonus": round(bonus, 1),
         "ot": ot_periods,
         "lead_changes": lead_changes,
+        "times_tied": times_tied,
         "top_scorer": top_scorer,
+        "thirty_plus": thirty_plus,
         "triple_double": triple_double,
     }
     if debug:
@@ -194,12 +213,13 @@ def _ot_periods(summary):
     return 0
 
 
-def _lead_changes(summary):
+def _team_stat(summary, names, labels):
+    """Best integer value of a team-level box score stat, by name or label."""
     box = summary.get("boxscore") or {}
     best = 0
     for team in box.get("teams", []):
         for stat in team.get("statistics", []):
-            if stat.get("name") == "leadChanges" or stat.get("label") == "Lead Changes":
+            if stat.get("name") in names or stat.get("label") in labels:
                 try:
                     best = max(best, int(float(stat.get("displayValue", 0))))
                 except (TypeError, ValueError):
@@ -207,10 +227,22 @@ def _lead_changes(summary):
     return best
 
 
+def _lead_changes(summary):
+    return _team_stat(summary, {"leadChanges"}, {"Lead Changes"})
+
+
+def _times_tied(summary):
+    return _team_stat(summary, {"timesTied"}, {"Times Tied"})
+
+
 def _star(summary):
-    """Return (top_points, had_triple_double) without exposing team scores."""
+    """Return (top_points, had_triple_double, thirty_plus_scorers).
+
+    Spoiler-safe: individual lines only, never a team total or the winner.
+    """
     top = 0
     td = False
+    thirty = 0
     box = summary.get("boxscore") or {}
     for team in box.get("players", []):
         for grp in team.get("statistics", []):
@@ -226,11 +258,13 @@ def _star(summary):
                         return 0.0
                 pts = num("points")
                 top = max(top, int(pts))
+                if pts >= 30:
+                    thirty += 1
                 cats = sum(1 for key in ("points", "rebounds", "assists",
                                          "steals", "blocks") if num(key) >= 10)
                 if cats >= 3:
                     td = True
-    return top, td
+    return top, td, thirty
 
 
 def _identity_from_event(ev):
@@ -277,12 +311,14 @@ def rate_event(ev, *, debug=False):
     if not ot:
         ot = _ot_periods(summary)   # belt-and-braces if the event lacked a period
 
-    top, td = _star(summary)
+    top, td, thirty = _star(summary)
     lc = _lead_changes(summary)
+    tt = _times_tied(summary)
     if debug:
         print(f"  {gid}  (event {event_id})  plays={len(wp)}")
     index, c = excitement(wp, ot_periods=ot, top_scorer=top, triple_double=td,
-                          lead_changes=lc, debug=debug)
+                          thirty_plus=thirty, lead_changes=lc, times_tied=tt,
+                          debug=debug)
 
     # The app shows only the Hype score (meter + "/100"), so ratings.json stays
     # lean and carries no spoiler-y tags — no "comeback", no result hints.
