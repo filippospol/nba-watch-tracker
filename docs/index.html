@@ -205,7 +205,7 @@
   .hype{display:inline-flex; align-items:center; line-height:0; cursor:default; vertical-align:middle}
   .hype:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:3px}
   .g .trk{stroke:var(--rule); fill:none} .g .arc, .g .ndl{stroke:currentColor; fill:none} .g .cap{fill:currentColor}
-  .hype.t-skip{color:var(--faint)} .hype.t-good{color:var(--fg)} .hype.t-must{color:var(--accent)}
+  .hype.t-skip{color:var(--faint)} .hype.t-good{color:var(--fg)} .hype.t-great{color:var(--accent2)} .hype.t-must{color:var(--accent)}
   .scorewrap{display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0}
   /* styled hover/tap card (matches the gauge) */
   .hypetip{position:fixed; z-index:70; background:var(--bg); border:1px solid var(--rule-strong);
@@ -215,7 +215,7 @@
   .hypetip .num{font-size:22px; font-weight:600; letter-spacing:-.02em; margin-top:4px; font-variant-numeric:tabular-nums}
   .hypetip .num small{font-size:12px; font-weight:500; color:var(--muted)}
   .hypetip .word{font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; margin-top:2px}
-  .hypetip.t-skip{color:var(--faint)} .hypetip.t-good{color:var(--fg)} .hypetip.t-must{color:var(--accent)}
+  .hypetip.t-skip{color:var(--faint)} .hypetip.t-good{color:var(--fg)} .hypetip.t-great{color:var(--accent2)} .hypetip.t-must{color:var(--accent)}
   .hypetip .lead{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
 
   /* stats */
@@ -2021,9 +2021,9 @@ function watchUrl(g,ph){
   return (ph==="final"||ph==="live") ? base+"?watchFullGame" : base;
 }
 function hypeLevel(x){ return x>=85?5:x>=70?4:x>=55?3:x>=42?2:1; }   // 1..5
-function hypeTier(t){ return t==="must"?"t-must":t==="good"?"t-good":"t-skip"; }
+function hypeTier(t){ return t==="must"?"t-must":t==="great"?"t-great":t==="good"?"t-good":"t-skip"; }
 /* The meter (never shows score, margin or winner). `inline` places it after the score. */
-function hypeWord(t){ return t==="must"?"Must-watch":t==="good"?"Worth it":"Low-key"; }
+function hypeWord(t){ return t==="must"?"Must-watch":t==="great"?"Great":t==="good"?"Worth it":"Low-key"; }
 /* A half-circle gauge: grey track, a coloured arc filled to x%, and a needle.
    f=0 -> needle left, f=1 -> needle right, f=0.5 -> straight up. */
 function gaugeSvg(x,{w=30,r=12,sw=3,pad=3}={}){
