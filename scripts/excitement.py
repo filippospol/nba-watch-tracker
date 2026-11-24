@@ -2,22 +2,25 @@
 """Compute a spoiler-safe "Excitement Index" for finished NBA games from ESPN's
 win-probability feed, and write it to ``ratings.json`` for the app to read.
 
-The index (0-100) starts from the Game Excitement Index idea popularised by
-inpredictable / Yale: add up how much the win probability swings over the game.
-A nail-biter swings constantly; a blowout barely moves. But win-probability flow
-alone under-rates games that are fun for other reasons, so it's about ~75% of the
-base here, not the whole story. The rest is split between an "action" component
-(how often the lead actually changed hands and the game was tied) and a "stars"
-component (big scoring nights, triple-doubles, several 30-point scorers).
+The index (0-100) answers one question for a user deciding how to spend their night:
+"is this game worth watching?" It is a watchability score, NOT an enhanced win-
+probability model. It is built from three independent reasons to tune in, each 0..1:
 
-On top of the base we add the game-shape bonuses that make something must-watch and
-that a weighted average alone washes out: overtime (heavily), a clutch coin-flip
-ending, a game that stayed close wire-to-wire, and the winner climbing out of a deep
-hole ("comeback"). Within the flow itself the weight leans toward sustained closeness
-and the finish rather than raw swing, for the same reason.
+  * COMPETITIVENESS — was it a real contest? Win-probability closeness (how often it
+    was a coin-flip, and for how long), a tight final margin, and lead/tie trading.
+    Win-prob flow lives here, as one input among three — not the whole story.
+  * DRAMA — a memorable moment: a clutch coin-flip finish, overtime, or the winner
+    climbing out of a deep hole ("comeback").
+  * STARS — standout individual play: a big top-scoring night, a triple-double, and
+    several 30-point scorers (stars going off on both sides).
+
+The three are combined with a noisy-OR — ``1 - (1-comp)*(1-drama)*(1-stars)`` — so the
+STRONGEST reason to watch carries the game instead of being averaged away. A game that
+is elite on any one pillar (an OT thriller, a buzzer-beater, a 50-point night) lands
+high; only a game weak on all three lands low. Scoring/pace is deliberately excluded.
 
 Nothing about the result is written in a way the app shows to users: only the index
-number, a tier label (Skip / Worth it / Must-watch) and neutral tags. No scores,
+number, a tier label (Skip / Worth it / Great / Must-watch) and neutral tags. No scores,
 no winner, no margin.
 
 Endpoint (public, undocumented, can change):
@@ -45,24 +48,30 @@ SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summ
 # ---- tiers -----------------------------------------------------------------
 # Thresholds on the 0-100 index. Tuned so a typical night has a spread of tiers;
 # easy to adjust once there's a season of real games to look at.
-TIER_MUST = 70      # "Must-watch"
-TIER_GOOD = 45      # "Worth it"  (below this -> "Skip")
+# Thresholds on the 0-100 watchability score. Each boundary is pegged to the pillar
+# strength it implies under the noisy-OR: must ~= one elite pillar (0.85+), great ~= one
+# strong pillar (0.68) or two solid ones, good ~= one decent reason (0.48). Provisional
+# for the new scale — recalibrate against a real rebuild's distribution.
+TIER_MUST  = 85     # "Must-watch"
+TIER_GREAT = 68     # "Great"
+TIER_GOOD  = 48     # "Worth it"   (below this -> "Skip")
 
 
 # ======================================================================
 #  The index — a pure function so it can be unit-tested without ESPN.
 # ======================================================================
 def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
-               thirty_plus=0, lead_changes=0, times_tied=0, debug=False):
+               thirty_plus=0, lead_changes=0, times_tied=0, final_margin=None,
+               debug=False):
     """Return (index 0-100, {components}) from a home-win-probability series.
 
     wp : list[float] in [0,1], one per play, in time order (home team's win
          probability). away prob is 1-wp. A game with <8 points is treated as
          having no usable data and returns 0.
 
-    The base blends win-probability flow (~75%) with two box-score components that
-    don't depend on the WP curve: ``action`` (lead_changes + times_tied) at 15% and
-    ``stars`` (top_scorer + triple_double + thirty_plus) at 10%.
+    The score answers "is this worth watching?" via three independent pillars —
+    competitiveness, drama, stars — each 0..1, combined with a noisy-OR so the
+    strongest reason to watch carries the game rather than being averaged away.
     """
     wp = [min(1.0, max(0.0, float(x))) for x in wp if x is not None]
     if len(wp) < 8:
@@ -117,76 +126,71 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
                  0.65 * _norm(lead_changes, 2, 20) +
                  0.35 * _norm(times_tied, 2, 16))
 
-    # 7) STARS — individual brilliance fans tune in for: a big top-scoring night,
-    #    a triple-double, and several 30-point scorers. No longer a token bonus.
+    # ======================================================================
+    #  "Worth watching?" — three independent reasons to tune in, each 0..1,
+    #  combined so the STRONGEST reason carries the game (noisy-OR), not
+    #  averaged. A game elite on any one pillar lands high; only a game weak on
+    #  all three lands low. This is a watchability score, not a drama/win-prob
+    #  index: win-probability closeness is just one input to one pillar.
+    # ======================================================================
+
+    # A) COMPETITIVENESS — was it a real contest? Win-prob closeness (how often
+    #    it was a coin-flip, and for how long), a tight final margin, and
+    #    lead/tie trading. Margin is spoiler-safe: it reveals neither winner
+    #    nor score.
+    wp_close = 0.5 * tension + 0.5 * close_time
+    if final_margin is not None:
+        margin_close = 1.0 - _norm(final_margin, 2, 22)   # 2 pts -> ~1, 22+ -> 0
+        competitiveness = 0.45 * wp_close + 0.30 * margin_close + 0.25 * action
+    else:
+        margin_close = None
+        competitiveness = 0.62 * wp_close + 0.38 * action
+
+    # B) DRAMA — a memorable moment: a clutch coin-flip finish, overtime (tied
+    #    at the buzzer by definition), or the winner climbing out of a deep hole.
+    ot_signal = min(1.0, 0.75 + 0.12 * (ot_periods - 1)) if ot_periods >= 1 else 0.0
+    drama = 0.45 * finish + 0.40 * ot_signal + 0.15 * comeback
+
+    # C) STARS — standout individual play: a big top-scoring night, a triple-
+    #    double, and several 30-point scorers (stars going off on both sides).
     stars = min(1.0,
-                0.55 * _norm(top_scorer, 22, 50) +
+                0.55 * _norm(top_scorer, 25, 55) +
                 0.25 * (1.0 if triple_double else 0.0) +
                 0.20 * _norm(thirty_plus, 1, 4))
 
-    # ---- combine: win-probability flow is ~75% of the base ----------------
-    # Weights sum to 1.0. Flow (swing + tension + close_time + finish + comeback)
-    # is ~0.75; the non-WP components action (0.15) and stars (0.10) make up the rest.
-    base = (
-        100.0 * _norm(swing, 1.3, 9.5) * 0.30 +   # total drama (the core GEI)
-        100.0 * tension * 0.15 +                  # how often it was a coin-flip
-        100.0 * close_time * 0.14 +               # close for a long stretch
-        100.0 * finish * 0.16 +                   # clutch-time doubt
-        100.0 * action * 0.15 +                   # lead traded hands / ties
-        100.0 * stars * 0.10                      # individual brilliance
-    )
+    comp_p = max(0.0, min(1.0, competitiveness))
+    dram_p = max(0.0, min(1.0, drama))
+    star_p = max(0.0, min(1.0, stars))
 
-    # ---- bonuses: the must-watch signals a weighted average washes out ------
-    # (lead changes, scoring and triple-doubles live in the base components above,
-    #  so they're not added again here.)
-    bonus = 0.0
-    if comeback >= 0.85:          # winner was once all but beaten
-        bonus += 6
-    elif comeback >= 0.70:
-        bonus += 3
-    if ot_periods >= 1:           # overtime is inherently must-watch
-        bonus += 10 + 5 * (ot_periods - 1)        # 2OT, 3OT add a lot more
-    # CLUTCH — a coin-flip in the dying minutes (finish is how close to 50/50 the
-    # final ~8% of plays got). A buzzer-beater-tight ending is a game-maker. Any
-    # overtime game was tied at the end of regulation, which is the clutch moment
-    # itself — but that tie sits just outside the final-8% window once OT is played,
-    # so OT guarantees the full clutch bonus regardless of how OT then unfolded.
-    if finish >= 0.90 or ot_periods >= 1:
-        bonus += 5
-    elif finish >= 0.78:
-        bonus += 2
-    # WIRE-TO-WIRE — close for most of the game, not just at the end. Rewards the
-    # game that was a coin-flip throughout (what "super competitive" really means).
-    compete = (close_time + tension) / 2.0
-    if compete >= 0.62:
-        bonus += 5
-    elif compete >= 0.50:
-        bonus += 2
-
-    index = int(round(max(0.0, min(100.0, base + bonus))))
+    # BEST REASON carries the game: noisy-OR of the three pillars. The top pillar
+    # sets the floor; each weaker pillar adds on top with diminishing returns.
+    worth = 1.0 - (1.0 - comp_p) * (1.0 - dram_p) * (1.0 - star_p)
+    index = int(round(max(0.0, min(100.0, 100.0 * worth))))
 
     comp = {
-        "swing_sum": round(swing_sum, 3),
-        "swing_per100": round(swing_per100, 2),
-        "swing": round(swing, 3),
+        "competitiveness": round(comp_p, 3),
+        "drama": round(dram_p, 3),
+        "stars": round(star_p, 3),
+        "wp_close": round(wp_close, 3),
+        "margin_close": (round(margin_close, 3) if margin_close is not None else None),
+        "action": round(action, 3),
+        "finish": round(finish, 3),
+        "ot_signal": round(ot_signal, 3),
+        "comeback": round(comeback, 3),
         "tension": round(tension, 3),
         "close_time": round(close_time, 3),
-        "finish": round(finish, 3),
-        "comeback": round(comeback, 3),
-        "action": round(action, 3),
-        "stars": round(stars, 3),
-        "base": round(base, 1),
-        "bonus": round(bonus, 1),
+        "swing": round(swing, 3),
         "ot": ot_periods,
         "lead_changes": lead_changes,
         "times_tied": times_tied,
+        "final_margin": final_margin,
         "top_scorer": top_scorer,
         "thirty_plus": thirty_plus,
         "triple_double": triple_double,
     }
     if debug:
         for k, v in comp.items():
-            print(f"    {k:14} {v}")
+            print(f"    {k:16} {v}")
     return index, comp
 
 
@@ -202,6 +206,8 @@ def _norm(x, lo, hi):
 def tier(index):
     if index >= TIER_MUST:
         return "must"
+    if index >= TIER_GREAT:
+        return "great"
     if index >= TIER_GOOD:
         return "good"
     return "skip"
@@ -286,6 +292,26 @@ def _star(summary):
     return top, td, thirty
 
 
+def _final_margin(summary):
+    """Absolute final point margin, or None if unavailable.
+
+    Margin only — it reveals neither the winner nor the score, so it stays
+    spoiler-safe. Used solely to feed the close-final bonus, never written out.
+    """
+    hdr = summary.get("header") or {}
+    comps = (hdr.get("competitions") or [{}])
+    cs = (comps[0].get("competitors") or [])
+    scores = []
+    for c in cs:
+        try:
+            scores.append(float(c.get("score")))
+        except (TypeError, ValueError):
+            pass
+    if len(scores) >= 2:
+        return abs(scores[0] - scores[1])
+    return None
+
+
 def _identity_from_event(ev):
     """(game_id, ot_periods) from a scoreboard event, or (None, 0).
 
@@ -333,11 +359,12 @@ def rate_event(ev, *, debug=False):
     top, td, thirty = _star(summary)
     lc = _lead_changes(summary)
     tt = _times_tied(summary)
+    margin = _final_margin(summary)
     if debug:
         print(f"  {gid}  (event {event_id})  plays={len(wp)}")
     index, c = excitement(wp, ot_periods=ot, top_scorer=top, triple_double=td,
                           thirty_plus=thirty, lead_changes=lc, times_tied=tt,
-                          debug=debug)
+                          final_margin=margin, debug=debug)
 
     # The app shows only the Hype score (meter + "/100"), so ratings.json stays
     # lean and carries no spoiler-y tags — no "comeback", no result hints.
