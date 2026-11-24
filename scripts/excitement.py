@@ -147,8 +147,11 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
     if ot_periods >= 1:           # overtime is inherently must-watch
         bonus += 10 + 5 * (ot_periods - 1)        # 2OT, 3OT add a lot more
     # CLUTCH — a coin-flip in the dying minutes (finish is how close to 50/50 the
-    # final ~8% of plays got). A buzzer-beater-tight ending is a game-maker.
-    if finish >= 0.90:
+    # final ~8% of plays got). A buzzer-beater-tight ending is a game-maker. Any
+    # overtime game was tied at the end of regulation, which is the clutch moment
+    # itself — but that tie sits just outside the final-8% window once OT is played,
+    # so OT guarantees the full clutch bonus regardless of how OT then unfolded.
+    if finish >= 0.90 or ot_periods >= 1:
         bonus += 5
     elif finish >= 0.78:
         bonus += 2
