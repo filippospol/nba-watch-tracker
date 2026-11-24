@@ -8,9 +8,13 @@ A nail-biter swings constantly; a blowout barely moves. But win-probability flow
 alone under-rates games that are fun for other reasons, so it's about ~75% of the
 base here, not the whole story. The rest is split between an "action" component
 (how often the lead actually changed hands and the game was tied) and a "stars"
-component (big scoring nights, triple-doubles, several 30-point scorers). On top of
-the base we still add a couple of game-shape bonuses: overtime, and the winner
-climbing out of a deep hole ("comeback").
+component (big scoring nights, triple-doubles, several 30-point scorers).
+
+On top of the base we add the game-shape bonuses that make something must-watch and
+that a weighted average alone washes out: overtime (heavily), a clutch coin-flip
+ending, a game that stayed close wire-to-wire, and the winner climbing out of a deep
+hole ("comeback"). Within the flow itself the weight leans toward sustained closeness
+and the finish rather than raw swing, for the same reason.
 
 Nothing about the result is written in a way the app shows to users: only the index
 number, a tier label (Skip / Worth it / Must-watch) and neutral tags. No scores,
@@ -124,25 +128,37 @@ def excitement(wp, *, ot_periods=0, top_scorer=0, triple_double=False,
     # Weights sum to 1.0. Flow (swing + tension + close_time + finish + comeback)
     # is ~0.75; the non-WP components action (0.15) and stars (0.10) make up the rest.
     base = (
-        100.0 * _norm(swing, 1.3, 9.5) * 0.33 +   # total drama (the core GEI)
-        100.0 * tension * 0.14 +                  # how often it was a coin-flip
-        100.0 * close_time * 0.13 +               # close for a long stretch
-        100.0 * finish * 0.13 +                   # clutch-time doubt
-        100.0 * comeback * 0.02 +                 # winner climbed out of a hole
+        100.0 * _norm(swing, 1.3, 9.5) * 0.30 +   # total drama (the core GEI)
+        100.0 * tension * 0.15 +                  # how often it was a coin-flip
+        100.0 * close_time * 0.14 +               # close for a long stretch
+        100.0 * finish * 0.16 +                   # clutch-time doubt
         100.0 * action * 0.15 +                   # lead traded hands / ties
         100.0 * stars * 0.10                      # individual brilliance
     )
 
-    # ---- bonuses: game-shape extras the base can't fully capture -----------
-    # (lead changes, scoring and triple-doubles now live in the base components
-    #  above, so they're no longer added again here.)
+    # ---- bonuses: the must-watch signals a weighted average washes out ------
+    # (lead changes, scoring and triple-doubles live in the base components above,
+    #  so they're not added again here.)
     bonus = 0.0
     if comeback >= 0.85:          # winner was once all but beaten
         bonus += 6
     elif comeback >= 0.70:
         bonus += 3
-    if ot_periods >= 1:
-        bonus += 6 + 3 * (ot_periods - 1)         # 2OT, 3OT add more
+    if ot_periods >= 1:           # overtime is inherently must-watch
+        bonus += 10 + 5 * (ot_periods - 1)        # 2OT, 3OT add a lot more
+    # CLUTCH — a coin-flip in the dying minutes (finish is how close to 50/50 the
+    # final ~8% of plays got). A buzzer-beater-tight ending is a game-maker.
+    if finish >= 0.90:
+        bonus += 5
+    elif finish >= 0.78:
+        bonus += 2
+    # WIRE-TO-WIRE — close for most of the game, not just at the end. Rewards the
+    # game that was a coin-flip throughout (what "super competitive" really means).
+    compete = (close_time + tension) / 2.0
+    if compete >= 0.62:
+        bonus += 5
+    elif compete >= 0.50:
+        bonus += 2
 
     index = int(round(max(0.0, min(100.0, base + bonus))))
 
