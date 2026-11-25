@@ -9,7 +9,7 @@ name: Update Excitement Ratings
 # re-rate the whole season from scratch — e.g. after a scoring-methodology change.
 on:
   schedule:
-    - cron: "50 9 * * *"         # 09:50 Greek — just after the schedule backstop
+    - cron: "30 5 * * *"         # 09:50 Greek — just after the schedule backstop
       timezone: "Europe/Athens"
   workflow_dispatch:
     inputs:
